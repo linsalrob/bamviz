@@ -3,9 +3,15 @@
 declare function init(): Promise<unknown>
 declare function parse_bam_header_json(bytes: Uint8Array): unknown
 declare function query_bam_reference_json(bytes: Uint8Array, referenceIndex: number): unknown
+declare function query_bam_region_json(bytes: Uint8Array, referenceIndex: number, start: number, end: number): unknown
 declare function parse_fasta_references_json(bytes: Uint8Array): unknown
-declare function fasta_reference_slice_json(bytes: Uint8Array, name: string, start: number, end: number): unknown
 declare function parse_fai_references_json(bytes: Uint8Array): unknown
+declare class FastaFile {
+  constructor(bytes: Uint8Array)
+  references_json(): unknown
+  reference_slice_json(name: string, start: number, end: number): unknown
+  free(): void
+}
 
-export { parse_bam_header_json, query_bam_reference_json, parse_fasta_references_json, fasta_reference_slice_json, parse_fai_references_json }
+export { FastaFile, parse_bam_header_json, query_bam_reference_json, query_bam_region_json, parse_fasta_references_json, parse_fai_references_json }
 export default init

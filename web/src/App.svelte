@@ -1,7 +1,8 @@
 <script lang="ts">
   import { afterUpdate, onMount } from 'svelte'
   import type { AlignmentSummary, BrowserError, ReferenceSequence } from './lib/types'
-  import { fastaReferenceSlice, parseBamHeader, parseFaiReferences, parseFastaReferences, queryBamReference } from './lib/wasm'
+  import type { CachedFasta } from './lib/wasm'
+  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBamHeader, parseFaiReferences, queryBamRegion } from './lib/wasm'
 
   let references: ReferenceSequence[] = []
   let selectedReference = ''
@@ -19,7 +20,7 @@
   let queryGeneration = 0
   let fastaInput: HTMLInputElement
   let faiInput: HTMLInputElement
-  let fastaBytes: Uint8Array | null = null
+  let fasta: CachedFasta | null = null
   let fastaStatus = ''
   let referenceBases = ''
   let referenceBasesStart = 0
@@ -49,8 +50,9 @@
       if (generation !== loadGeneration) return
       bamBytes = bytes
       references = parsedReferences
-      selectedReference = references[0]?.name ?? ''
-      resetView()
+      const initialReference = references[0]
+      selectedReference = initialReference?.name ?? ''
+      resetView(initialReference)
       state = 'ready'
       await loadSelectedReference(generation)
     } catch (caught) {
@@ -60,14 +62,15 @@
     }
   }
 
-  function resetView() {
+  function resetView(reference = selectedReferenceData) {
+    if (!reference) return
     viewStart = 0
-    viewEnd = Math.max(1, selectedReferenceData?.length ?? 1)
-    void refreshReferenceContext()
+    viewEnd = Math.max(1, reference.length)
+    void refreshReferenceContext(reference)
   }
 
   function selectReference() {
-    resetView()
+    resetView(references.find((reference) => reference.name === selectedReference))
     void loadSelectedReference()
   }
 
@@ -75,25 +78,27 @@
     fastaStatus = `Reading ${file.name}…`
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const fastaReferences = await parseFastaReferences(bytes)
-      fastaBytes = bytes
-      fastaStatus = `${file.name}: ${fastaReferences.length} reference${fastaReferences.length === 1 ? '' : 's'} available`
+      const parsedFasta = await loadCachedFasta(bytes)
+      fasta?.free()
+      fasta = parsedFasta
+      const fastaReferenceList = fastaReferences(fasta)
+      fastaStatus = `${file.name}: ${fastaReferenceList.length} reference${fastaReferenceList.length === 1 ? '' : 's'} available`
       await refreshReferenceContext()
     } catch (caught) { fastaStatus = caught instanceof Error ? caught.message : String(caught) }
   }
 
   async function loadFai(file: File) {
-    try { const references = await parseFaiReferences(new Uint8Array(await file.arrayBuffer())); fastaStatus = `${file.name}: index for ${references.length} reference${references.length === 1 ? '' : 's'} loaded${fastaBytes ? '' : ' (FASTA sequence is still required)'}` }
+    try { const references = await parseFaiReferences(new Uint8Array(await file.arrayBuffer())); fastaStatus = `${file.name}: index for ${references.length} reference${references.length === 1 ? '' : 's'} loaded${fasta ? '' : ' (FASTA sequence is still required)'}` }
     catch (caught) { fastaStatus = caught instanceof Error ? caught.message : String(caught) }
   }
 
-  async function refreshReferenceContext() {
-    if (!fastaBytes || !selectedReferenceData) { referenceBases = ''; return }
+  async function refreshReferenceContext(reference = selectedReferenceData) {
+    if (!fasta || !reference) { referenceBases = ''; return }
     const generation = ++referenceGeneration
-    const name = selectedReferenceData.name
+    const name = reference.name
     const start = Math.floor(viewStart); const end = Math.ceil(viewEnd)
     try {
-      const bases = await fastaReferenceSlice(fastaBytes, name, start, end)
+      const bases = fastaReferenceSlice(fasta, name, start, end)
       if (generation !== referenceGeneration || name !== selectedReference) return
       referenceBases = bases
       referenceBasesStart = start
@@ -110,7 +115,12 @@
     const width = Math.min(selectedReferenceData.length, Math.max(1, (viewEnd - viewStart) * scale))
     viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, middle - width / 2))
     viewEnd = viewStart + width
+    void refreshViewport()
+  }
+
+  function refreshViewport() {
     void refreshReferenceContext()
+    void loadSelectedReference()
   }
 
   function zoomCanvas(event: WheelEvent) {
@@ -123,7 +133,7 @@
     const width = Math.min(selectedReferenceData.length, Math.max(1, (viewEnd - viewStart) * scale))
     viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, focus - width * fraction))
     viewEnd = viewStart + width
-    void refreshReferenceContext()
+    refreshViewport()
   }
 
   function pointerDown(event: PointerEvent) {
@@ -137,7 +147,7 @@
     const width = drag.end - drag.start
     viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, drag.start - delta))
     viewEnd = viewStart + width
-    void refreshReferenceContext()
+    refreshViewport()
   }
 
   function pointerUp() { drag = null }
@@ -186,8 +196,16 @@
             if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(base, x + 1, y + 11) }
           }
         }
-        context.strokeStyle = '#c33'; context.lineWidth = 2
-        for (const deletion of alignment.deletions) { const x = toX(deletion.start); context.beginPath(); context.moveTo(x, y); context.lineTo(x, y + 13); context.stroke() }
+        context.fillStyle = '#f7fafc'
+        for (const deletion of alignment.deletions) {
+          const left = toX(Math.max(deletion.start, viewStart)); const right = toX(Math.min(deletion.end, viewEnd))
+          context.fillRect(left, y, Math.max(1, right - left), 13)
+        }
+        context.strokeStyle = '#c33'; context.lineWidth = 1
+        for (const deletion of alignment.deletions) {
+          const left = toX(Math.max(deletion.start, viewStart)); const right = toX(Math.min(deletion.end, viewEnd))
+          context.beginPath(); context.moveTo(left, y + 6.5); context.lineTo(right, y + 6.5); context.stroke()
+        }
         context.fillStyle = '#8e44ad'
         for (const insertion of alignment.insertions) { const x = toX(insertion.position); context.fillRect(x - 1, y - 3, 3, 19) }
       }
@@ -204,7 +222,7 @@
     alignmentState = 'loading'
     error = null
     try {
-      const result = await queryBamReference(bamBytes, referenceIndex)
+      const result = await queryBamRegion(bamBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd))
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       alignments = result.alignments
       alignmentCount = result.total_count
@@ -265,7 +283,7 @@
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
           {#if alignmentState === 'ready'}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
-            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={resetView}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output>{Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
+            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView()}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output>{Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas>
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">

@@ -23,12 +23,66 @@ pub enum FastaError {
     MissingReference(String),
 }
 
+/// Parsed FASTA records retained for repeated local reference slices.
+pub struct FastaRecords {
+    records: Vec<(String, String)>,
+}
+
+impl FastaRecords {
+    pub fn parse(input: &[u8]) -> Result<Self, FastaError> {
+        let text = String::from_utf8_lossy(input);
+        let mut records = Vec::new();
+        let mut name: Option<String> = None;
+        let mut sequence = String::new();
+        for line in text.lines() {
+            if let Some(header) = line.strip_prefix('>') {
+                if let Some(previous) = name.take() {
+                    records.push((previous, std::mem::take(&mut sequence)));
+                }
+                let next = header.split_whitespace().next().unwrap_or_default();
+                if next.is_empty() {
+                    return Err(FastaError::EmptyName);
+                }
+                name = Some(next.into());
+            } else if name.is_some() {
+                sequence.extend(
+                    line.bytes()
+                        .filter(|byte| !byte.is_ascii_whitespace())
+                        .map(|byte| (byte as char).to_ascii_uppercase()),
+                );
+            }
+        }
+        if let Some(previous) = name {
+            records.push((previous, sequence));
+        }
+        if records.is_empty() {
+            Err(FastaError::NoRecords)
+        } else {
+            Ok(Self { records })
+        }
+    }
+
+    pub fn references(&self) -> Vec<ReferenceSequence> {
+        self.records
+            .iter()
+            .map(|(name, sequence)| ReferenceSequence::new(name, sequence.len() as u32))
+            .collect()
+    }
+
+    pub fn reference_slice(&self, name: &str, start: u32, end: u32) -> Result<String, FastaError> {
+        let (_, sequence) = self
+            .records
+            .iter()
+            .find(|(record_name, _)| record_name == name)
+            .ok_or_else(|| FastaError::MissingReference(name.into()))?;
+        let start = start.min(sequence.len() as u32) as usize;
+        let end = end.min(sequence.len() as u32).max(start as u32) as usize;
+        Ok(sequence[start..end].to_string())
+    }
+}
+
 pub fn parse_fasta_references(input: &[u8]) -> Result<Vec<ReferenceSequence>, FastaError> {
-    let records = parse_fasta(input)?;
-    Ok(records
-        .into_iter()
-        .map(|(name, sequence)| ReferenceSequence::new(name, sequence.len() as u32))
-        .collect())
+    Ok(FastaRecords::parse(input)?.references())
 }
 
 pub fn fasta_reference_slice(
@@ -37,14 +91,7 @@ pub fn fasta_reference_slice(
     start: u32,
     end: u32,
 ) -> Result<String, FastaError> {
-    let records = parse_fasta(input)?;
-    let (_, sequence) = records
-        .into_iter()
-        .find(|(record_name, _)| record_name == name)
-        .ok_or_else(|| FastaError::MissingReference(name.into()))?;
-    let start = start.min(sequence.len() as u32) as usize;
-    let end = end.min(sequence.len() as u32).max(start as u32) as usize;
-    Ok(sequence[start..end].to_string())
+    FastaRecords::parse(input)?.reference_slice(name, start, end)
 }
 
 pub fn parse_fai_references(input: &[u8]) -> Result<Vec<ReferenceSequence>, FastaError> {
@@ -62,39 +109,6 @@ pub fn parse_fai_references(input: &[u8]) -> Result<Vec<ReferenceSequence>, Fast
         Err(FastaError::NoRecords)
     } else {
         Ok(references)
-    }
-}
-
-fn parse_fasta(input: &[u8]) -> Result<Vec<(String, String)>, FastaError> {
-    let text = String::from_utf8_lossy(input);
-    let mut records = Vec::new();
-    let mut name: Option<String> = None;
-    let mut sequence = String::new();
-    for line in text.lines() {
-        if let Some(header) = line.strip_prefix('>') {
-            if let Some(previous) = name.take() {
-                records.push((previous, std::mem::take(&mut sequence)));
-            }
-            let next = header.split_whitespace().next().unwrap_or_default();
-            if next.is_empty() {
-                return Err(FastaError::EmptyName);
-            }
-            name = Some(next.into());
-        } else if name.is_some() {
-            sequence.extend(
-                line.bytes()
-                    .filter(|byte| !byte.is_ascii_whitespace())
-                    .map(|byte| (byte as char).to_ascii_uppercase()),
-            );
-        }
-    }
-    if let Some(previous) = name {
-        records.push((previous, sequence));
-    }
-    if records.is_empty() {
-        Err(FastaError::NoRecords)
-    } else {
-        Ok(records)
     }
 }
 
@@ -138,6 +152,19 @@ pub fn query_bam_reference(
     input: &[u8],
     reference_index: usize,
 ) -> Result<AlignmentQueryResult, BamHeaderError> {
+    query_bam_region(input, reference_index, 0, u32::MAX)
+}
+
+/// Sequentially scans mapped alignments overlapping a 0-based half-open region.
+///
+/// This preserves bounded browser DTOs while ensuring the unindexed fallback renders
+/// the current viewport rather than an unrelated prefix of the contig.
+pub fn query_bam_region(
+    input: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+) -> Result<AlignmentQueryResult, BamHeaderError> {
     let mut decoded = MultiGzDecoder::new(input);
     let references = read_bam_header(&mut decoded)?;
     if reference_index >= references.len() {
@@ -154,6 +181,8 @@ pub fn query_bam_reference(
         if record.reference_index == reference_index as i32
             && record.start >= 0
             && record.flags & 0x4 == 0
+            && (record.start as u32) < end
+            && record.end > start
         {
             total_count += 1;
             if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
@@ -558,7 +587,8 @@ mod tests {
 
     use super::{
         fasta_reference_slice, long_cigar_operations, parse_bam_header, parse_fai_references,
-        parse_fasta_references, query_bam_reference, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
+        parse_fasta_references, query_bam_reference, query_bam_region, BamHeaderError,
+        MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -720,6 +750,24 @@ mod tests {
         assert_eq!(result.total_count, (MAX_ALIGNMENT_SUMMARIES + 1) as u64);
         assert_eq!(result.alignments.len(), MAX_ALIGNMENT_SUMMARIES);
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn returns_only_alignments_overlapping_a_half_open_region() {
+        let bam = compressed_bam(
+            &[("chr1", 1_000)],
+            &[
+                record(0, 10, 0, 60, &[(5, 0)]),
+                record(0, 100, 0, 60, &[(5, 0)]),
+            ],
+        );
+        let result = query_bam_region(&bam, 0, 15, 101).expect("valid BAM");
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.alignments[0].start, 100);
+        assert!(query_bam_region(&bam, 0, 15, 100)
+            .expect("valid BAM")
+            .alignments
+            .is_empty());
     }
 
     #[test]
