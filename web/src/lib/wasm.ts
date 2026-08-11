@@ -1,5 +1,5 @@
 import type { AlignmentQueryResult, ReferenceSequence } from './types'
-import init, { parse_bam_header_json, query_bam_reference_json } from '@bamviz-wasm'
+import init, { fasta_reference_slice_json, parse_fai_references_json, parse_fasta_references_json, parse_bam_header_json, query_bam_reference_json } from '@bamviz-wasm'
 
 let initialization: Promise<void> | undefined
 
@@ -17,3 +17,6 @@ export async function queryBamReference(bytes: Uint8Array, referenceIndex: numbe
   await initializeWasm()
   return query_bam_reference_json(bytes, referenceIndex) as AlignmentQueryResult
 }
+export async function parseFastaReferences(bytes: Uint8Array): Promise<ReferenceSequence[]> { await initializeWasm(); return parse_fasta_references_json(bytes) as ReferenceSequence[] }
+export async function fastaReferenceSlice(bytes: Uint8Array, name: string, start: number, end: number): Promise<string> { await initializeWasm(); return fasta_reference_slice_json(bytes, name, start, end) as string }
+export async function parseFaiReferences(bytes: Uint8Array): Promise<ReferenceSequence[]> { await initializeWasm(); return parse_fai_references_json(bytes) as ReferenceSequence[] }

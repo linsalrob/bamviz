@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { afterUpdate, onMount } from 'svelte'
   import type { AlignmentSummary, BrowserError, ReferenceSequence } from './lib/types'
-  import { parseBamHeader, queryBamReference } from './lib/wasm'
+  import { fastaReferenceSlice, parseBamHeader, parseFaiReferences, parseFastaReferences, queryBamReference } from './lib/wasm'
 
   let references: ReferenceSequence[] = []
   let selectedReference = ''
@@ -16,6 +17,19 @@
   let alignmentState: 'idle' | 'loading' | 'ready' = 'idle'
   let loadGeneration = 0
   let queryGeneration = 0
+  let fastaInput: HTMLInputElement
+  let faiInput: HTMLInputElement
+  let fastaBytes: Uint8Array | null = null
+  let fastaStatus = ''
+  let referenceBases = ''
+  let referenceBasesStart = 0
+  let referenceGeneration = 0
+  let canvas: HTMLCanvasElement
+  let viewStart = 0
+  let viewEnd = 1
+  let drag: { x: number; start: number; end: number } | null = null
+
+  $: selectedReferenceData = references.find((reference) => reference.name === selectedReference)
 
   async function loadBam(file: File) {
     const generation = ++loadGeneration
@@ -36,6 +50,7 @@
       bamBytes = bytes
       references = parsedReferences
       selectedReference = references[0]?.name ?? ''
+      resetView()
       state = 'ready'
       await loadSelectedReference(generation)
     } catch (caught) {
@@ -44,6 +59,143 @@
       state = 'error'
     }
   }
+
+  function resetView() {
+    viewStart = 0
+    viewEnd = Math.max(1, selectedReferenceData?.length ?? 1)
+    void refreshReferenceContext()
+  }
+
+  function selectReference() {
+    resetView()
+    void loadSelectedReference()
+  }
+
+  async function loadFasta(file: File) {
+    fastaStatus = `Reading ${file.name}…`
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const fastaReferences = await parseFastaReferences(bytes)
+      fastaBytes = bytes
+      fastaStatus = `${file.name}: ${fastaReferences.length} reference${fastaReferences.length === 1 ? '' : 's'} available`
+      await refreshReferenceContext()
+    } catch (caught) { fastaStatus = caught instanceof Error ? caught.message : String(caught) }
+  }
+
+  async function loadFai(file: File) {
+    try { const references = await parseFaiReferences(new Uint8Array(await file.arrayBuffer())); fastaStatus = `${file.name}: index for ${references.length} reference${references.length === 1 ? '' : 's'} loaded${fastaBytes ? '' : ' (FASTA sequence is still required)'}` }
+    catch (caught) { fastaStatus = caught instanceof Error ? caught.message : String(caught) }
+  }
+
+  async function refreshReferenceContext() {
+    if (!fastaBytes || !selectedReferenceData) { referenceBases = ''; return }
+    const generation = ++referenceGeneration
+    const name = selectedReferenceData.name
+    const start = Math.floor(viewStart); const end = Math.ceil(viewEnd)
+    try {
+      const bases = await fastaReferenceSlice(fastaBytes, name, start, end)
+      if (generation !== referenceGeneration || name !== selectedReference) return
+      referenceBases = bases
+      referenceBasesStart = start
+    } catch {
+      if (generation !== referenceGeneration || name !== selectedReference) return
+      referenceBases = ''
+      fastaStatus = `No FASTA record matched ${name}`
+    }
+  }
+
+  function zoomBy(scale: number) {
+    if (!selectedReferenceData) return
+    const middle = (viewStart + viewEnd) / 2
+    const width = Math.min(selectedReferenceData.length, Math.max(1, (viewEnd - viewStart) * scale))
+    viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, middle - width / 2))
+    viewEnd = viewStart + width
+    void refreshReferenceContext()
+  }
+
+  function zoomCanvas(event: WheelEvent) {
+    event.preventDefault()
+    if (!canvas || !selectedReferenceData) return
+    const bounds = canvas.getBoundingClientRect()
+    const fraction = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width))
+    const focus = viewStart + (viewEnd - viewStart) * fraction
+    const scale = event.deltaY < 0 ? 0.7 : 1 / 0.7
+    const width = Math.min(selectedReferenceData.length, Math.max(1, (viewEnd - viewStart) * scale))
+    viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, focus - width * fraction))
+    viewEnd = viewStart + width
+    void refreshReferenceContext()
+  }
+
+  function pointerDown(event: PointerEvent) {
+    canvas.setPointerCapture(event.pointerId)
+    drag = { x: event.clientX, start: viewStart, end: viewEnd }
+  }
+
+  function pointerMove(event: PointerEvent) {
+    if (!drag || !canvas || !selectedReferenceData) return
+    const delta = (event.clientX - drag.x) / canvas.getBoundingClientRect().width * (drag.end - drag.start)
+    const width = drag.end - drag.start
+    viewStart = Math.max(0, Math.min(selectedReferenceData.length - width, drag.start - delta))
+    viewEnd = viewStart + width
+    void refreshReferenceContext()
+  }
+
+  function pointerUp() { drag = null }
+
+  function drawCanvas() {
+    if (!canvas || !selectedReferenceData) return
+    const cssWidth = canvas.clientWidth
+    const cssHeight = 250
+    if (!cssWidth) return
+    const ratio = window.devicePixelRatio || 1
+    canvas.width = Math.floor(cssWidth * ratio); canvas.height = cssHeight * ratio
+    const context = canvas.getContext('2d')!
+    context.setTransform(ratio, 0, 0, ratio, 0, 0)
+    context.clearRect(0, 0, cssWidth, cssHeight)
+    context.fillStyle = '#f7fafc'; context.fillRect(0, 0, cssWidth, cssHeight)
+    const basesPerPixel = (viewEnd - viewStart) / cssWidth
+    const toX = (position: number) => (position - viewStart) / basesPerPixel
+    context.fillStyle = '#315b6d'; context.font = '12px system-ui'
+    context.fillText(`${Math.floor(viewStart + 1).toLocaleString()}–${Math.ceil(viewEnd).toLocaleString()} (1-based)`, 8, 16)
+    if (referenceBases && basesPerPixel <= 0.15) {
+      context.fillStyle = '#172433'
+      for (let index = 0; index < referenceBases.length; index++) {
+        const position = referenceBasesStart + index
+        if (position >= viewStart && position < viewEnd) context.fillText(referenceBases[index], toX(position) + 1, 30)
+      }
+    }
+    const lanes: number[] = []
+    for (const alignment of alignments) {
+      if (alignment.end <= viewStart || alignment.start >= viewEnd) continue
+      let lane = lanes.findIndex((end) => end <= alignment.start)
+      if (lane === -1) { lane = lanes.length; lanes.push(alignment.end) } else lanes[lane] = alignment.end
+      const y = (referenceBases ? 45 : 30) + lane * 19
+      if (y > cssHeight - 10) continue
+      const left = toX(Math.max(alignment.start, viewStart)); const right = toX(Math.min(alignment.end, viewEnd))
+      context.fillStyle = alignment.is_reverse ? '#6f58a7' : '#176d7d'
+      context.fillRect(left, y, Math.max(1, right - left), 13)
+      if (basesPerPixel <= 1.5) {
+        for (const block of alignment.blocks) {
+          for (let index = 0; index < block.bases.length; index++) {
+            const position = block.start + index
+            if (position < viewStart || position >= viewEnd) continue
+            const base = block.bases[index].toUpperCase()
+            const colour = ({ A: '#4daf4a', C: '#377eb8', G: '#ffb000', T: '#e34a33' } as Record<string, string>)[base] ?? '#7f8c8d'
+            const x = toX(position); const width = Math.max(1, 1 / basesPerPixel)
+            context.fillStyle = colour; context.fillRect(x, y, width, 13)
+            if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(base, x + 1, y + 11) }
+          }
+        }
+        context.strokeStyle = '#c33'; context.lineWidth = 2
+        for (const deletion of alignment.deletions) { const x = toX(deletion.start); context.beginPath(); context.moveTo(x, y); context.lineTo(x, y + 13); context.stroke() }
+        context.fillStyle = '#8e44ad'
+        for (const insertion of alignment.insertions) { const x = toX(insertion.position); context.fillRect(x - 1, y - 3, 3, 19) }
+      }
+    }
+  }
+
+  onMount(() => { window.addEventListener('resize', drawCanvas); return () => window.removeEventListener('resize', drawCanvas) })
+  afterUpdate(drawCanvas)
 
   async function loadSelectedReference(expectedLoadGeneration = loadGeneration) {
     const referenceIndex = references.findIndex((reference) => reference.name === selectedReference)
@@ -90,8 +242,9 @@
     <p>Drop a coordinate-sorted <code>.bam</code> file here, or choose one from your computer.</p>
     <input bind:this={fileInput} type="file" accept=".bam,application/octet-stream" onchange={(event) => handleFiles(event.currentTarget.files)} />
     <button onclick={() => fileInput.click()}>Choose BAM</button>
-    <small>BAM headers and selected-contig alignments are decoded locally. BAI acceleration follows in M2.</small>
+    <small>BAM headers and selected-contig alignments are decoded locally. BAI-backed viewport queries are planned for later performance work.</small>
   </section>
+  <section class="reference-loader" aria-label="Optional reference files"><h2>Optional reference context</h2><p>Load a FASTA to display reference bases. An FAI is an index only and does not provide sequence.</p><input bind:this={fastaInput} type="file" accept=".fa,.fasta,.fna,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFasta(event.currentTarget.files[0])} /><button onclick={() => fastaInput.click()}>Choose FASTA</button><input bind:this={faiInput} type="file" accept=".fai,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFai(event.currentTarget.files[0])} /><button onclick={() => faiInput.click()}>Choose FAI</button>{#if fastaStatus}<small role="status">{fastaStatus}</small>{/if}</section>
 
   {#if state === 'parsing'}<p role="status">Reading the header from {filename}…</p>{/if}
   {#if error}
@@ -104,7 +257,7 @@
     {#if references.length}
       <section class="contigs" aria-label="BAM references">
         <label for="contig">Reference / contig</label>
-        <select id="contig" bind:value={selectedReference} onchange={() => void loadSelectedReference()}>
+        <select id="contig" bind:value={selectedReference} onchange={selectReference}>
           {#each references as reference}<option value={reference.name}>{reference.name} — {reference.length.toLocaleString()} bp</option>{/each}
         </select>
         {#if selectedReference}
@@ -112,6 +265,8 @@
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
           {#if alignmentState === 'ready'}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
+            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={resetView}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output>{Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
+            <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas>
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
                 <div class="alignment-heading"><span>Position (1-based)</span><span>CIGAR</span><span>MAPQ</span><span>Strand</span></div>
@@ -134,8 +289,9 @@
   :global(*) { box-sizing: border-box } :global(body) { margin: 0; color: #172433; background: #edf2f6; font-family: system-ui, sans-serif } :global(button), :global(input), :global(select) { font: inherit }
   header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem max(1rem, calc((100% - 1100px) / 2)); color: #fff; background: #173e51 } h1 { margin: 0 } header p { margin: .1rem 0 } header span { padding: .4rem .7rem; border: 1px solid #8ed7c4; border-radius: 2rem }
   main { display: grid; gap: 1rem; max-width: 1100px; margin: auto; padding: 1rem } section { background: #fff; border: 1px solid #c6d3dc; border-radius: .5rem; padding: 1rem } h2 { margin-top: 0 }
-  .file-loader { display: grid; gap: .8rem; border: 2px dashed #53788b; text-align: center } .file-loader input { display: none } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } small { color: #536473 }
+  .file-loader, .reference-loader { display: grid; gap: .8rem; border: 2px dashed #53788b; text-align: center } .file-loader input, .reference-loader input { display: none } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } small { color: #536473 }
   .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
   .alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .5fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment:nth-child(odd) { background: #f4f8fa }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }
+  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:250px; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column } }
 </style>

@@ -16,7 +16,7 @@ function syntheticBam(): Buffer {
     const body: number[] = []
     const bodyI32 = (value: number) => body.push(...Buffer.from(Uint8Array.of(value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255)))
     bodyI32(reference); bodyI32(start); body.push(2, mapq); body.push(0, 0, 1, 0, 0, 0); bodyI32(5); bodyI32(-1); bodyI32(-1); bodyI32(0)
-    body.push(...Buffer.from('r\0')); bodyI32(5 << 4); body.push(0, 0, 0, 0, 0, 255, 255, 255, 255, 255)
+    body.push(...Buffer.from('r\0')); bodyI32(5 << 4); body.push(0x12, 0x48, 0x10, 255, 255, 255, 255, 255)
     i32(body.length); bytes.push(...body)
   }
   record(0, 10, 60)
@@ -32,7 +32,10 @@ test('opens the local BAM loader', async ({ page }) => {
 
 test('loads a BAM and changes the selected contig', async ({ page }) => {
   await page.goto('/')
-  await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.bam', mimeType: 'application/octet-stream', buffer: syntheticBam() })
+  await page
+    .getByRole('region', { name: 'BAM file loader' })
+    .locator('input[type=file]')
+    .setInputFiles({ name: 'synthetic.bam', mimeType: 'application/octet-stream', buffer: syntheticBam() })
   await expect(page.getByText('2 references')).toBeVisible()
   await expect(page.getByText('1 mapped alignment found.')).toBeVisible()
   await page.getByLabel('Reference / contig').selectOption('chr2')
