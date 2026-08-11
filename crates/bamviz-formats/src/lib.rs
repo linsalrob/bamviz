@@ -510,7 +510,7 @@ mod tests {
     fn uses_the_cg_auxiliary_tag_for_a_long_cigar() {
         let mut auxiliary = b"CGBI".to_vec();
         auxiliary.extend_from_slice(&2_i32.to_le_bytes());
-        auxiliary.extend_from_slice(&((5_u32 << 4) | 0).to_le_bytes());
+        auxiliary.extend_from_slice(&(5_u32 << 4).to_le_bytes());
         auxiliary.extend_from_slice(&((2_u32 << 4) | 1).to_le_bytes());
         assert_eq!(
             long_cigar_operations(&auxiliary).expect("valid CG tag"),
