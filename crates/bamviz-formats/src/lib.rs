@@ -178,6 +178,9 @@ pub fn parse_bai_index(input: &[u8]) -> Result<BaiIndexSummary, BaiError> {
         return Err(BaiError::InvalidMagic);
     }
     let reference_count = read_bai_u32(input, &mut cursor, "reference")? as usize;
+    if reference_count > input.len().saturating_sub(cursor) / 8 {
+        return Err(BaiError::Truncated);
+    }
     let mut references = Vec::with_capacity(reference_count);
     for _ in 0..reference_count {
         let bin_count = read_bai_u32(input, &mut cursor, "bin")?;
@@ -1217,6 +1220,10 @@ mod tests {
     fn rejects_invalid_bai_magic_and_truncation() {
         assert_eq!(parse_bai_index(b"nope"), Err(BaiError::InvalidMagic));
         assert_eq!(parse_bai_index(b"BAI\x01\x01"), Err(BaiError::Truncated));
+        assert_eq!(
+            parse_bai_index(b"BAI\x01\xff\xff\xff\x7f"),
+            Err(BaiError::Truncated)
+        );
     }
 
     #[test]
