@@ -1,6 +1,6 @@
 //! File-format adapters. BAM data is converted into `bamviz-core` types here.
 
-use std::io::Read;
+use std::io::{Cursor, Read};
 
 use bamviz_core::{
     AlignedBlock, AlignmentFilter, AlignmentFlags, AlignmentQueryResult, AlignmentSummary,
@@ -148,6 +148,12 @@ pub enum BaiError {
     InvalidMetadata,
 }
 
+#[derive(Clone, Copy)]
+struct BaiChunk {
+    begin: u64,
+    end: u64,
+}
+
 /// The metadata needed to describe one reference's BAI entries without retaining chunks.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct BaiReferenceSummary {
@@ -221,6 +227,175 @@ pub fn parse_bai_index(input: &[u8]) -> Result<BaiIndexSummary, BaiError> {
         references,
         unplaced_unmapped_count,
     })
+}
+
+fn bai_chunks_for_region(
+    input: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+) -> Result<Vec<BaiChunk>, BaiError> {
+    let wanted = bai_bins_for_region(start, end);
+    let mut cursor = 4;
+    if input.get(..4) != Some(BAI_MAGIC) {
+        return Err(BaiError::InvalidMagic);
+    }
+    let reference_count = read_bai_u32(input, &mut cursor, "reference")? as usize;
+    if reference_index >= reference_count {
+        return Ok(Vec::new());
+    }
+    let mut chunks = Vec::new();
+    for reference in 0..reference_count {
+        let bin_count = read_bai_u32(input, &mut cursor, "bin")?;
+        for _ in 0..bin_count {
+            let bin = read_bai_u32(input, &mut cursor, "bin")?;
+            let count = read_bai_u32(input, &mut cursor, "chunk")?;
+            for _ in 0..count {
+                let begin = read_bai_u64(input, &mut cursor, "chunk")?;
+                let finish = read_bai_u64(input, &mut cursor, "chunk")?;
+                if reference == reference_index && bin != BAI_METADATA_BIN && wanted.contains(&bin)
+                {
+                    chunks.push(BaiChunk { begin, end: finish });
+                }
+            }
+        }
+        let linear_count = read_bai_u32(input, &mut cursor, "linear interval")? as usize;
+        take_bai(
+            input,
+            &mut cursor,
+            linear_count.checked_mul(8).ok_or(BaiError::InvalidCount {
+                field: "linear interval",
+            })?,
+        )?;
+    }
+    chunks.sort_by_key(|chunk| chunk.begin);
+    Ok(chunks)
+}
+
+fn bai_bins_for_region(start: u32, end: u32) -> Vec<u32> {
+    if start >= end {
+        return Vec::new();
+    }
+    let end = end - 1;
+    let mut bins = vec![0];
+    for (offset, shift) in [(1, 26), (9, 23), (73, 20), (585, 17), (4681, 14)] {
+        for bin in offset + (start >> shift)..=offset + (end >> shift) {
+            bins.push(bin);
+        }
+    }
+    bins
+}
+
+/// Uses BAI virtual-offset chunks to decode only BGZF blocks selected for a region.
+pub fn query_bam_region_indexed_with_filter(
+    input: &[u8],
+    bai: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+    filter: AlignmentFilter,
+) -> Result<AlignmentQueryResult, BamHeaderError> {
+    let mut header = MultiGzDecoder::new(input);
+    let references = read_bam_header(&mut header)?;
+    let chunks = bai_chunks_for_region(bai, reference_index, start, end)
+        .map_err(|_| BamHeaderError::InvalidRecordSize)?;
+    let mut alignments = Vec::new();
+    let mut total_count = 0;
+    for chunk in chunks {
+        let mut reader =
+            BgzfChunkReader::new(input, chunk).map_err(|_| BamHeaderError::InvalidRecordSize)?;
+        while let Some(record) = read_bam_record(&mut reader)? {
+            let flags = AlignmentFlags::from_sam_flags(record.flags);
+            if record.reference_index == reference_index as i32
+                && record.start >= 0
+                && record.flags & 0x4 == 0
+                && (record.start as u32) < end
+                && record.end > start
+                && filter.matches(record.mapping_quality, &flags)
+            {
+                total_count += 1;
+                if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
+                    alignments.push(summary_from_record(record, flags, &references));
+                }
+            }
+        }
+    }
+    Ok(AlignmentQueryResult {
+        total_count,
+        truncated: total_count > alignments.len() as u64,
+        alignments,
+    })
+}
+
+struct BgzfChunkReader<'a> {
+    data: &'a [u8],
+    next_block: usize,
+    chunk_end: u64,
+    block: Vec<u8>,
+    cursor: usize,
+    limit: usize,
+}
+impl<'a> BgzfChunkReader<'a> {
+    fn new(data: &'a [u8], chunk: BaiChunk) -> Result<Self, BaiError> {
+        let mut reader = Self {
+            data,
+            next_block: (chunk.begin >> 16) as usize,
+            chunk_end: chunk.end,
+            block: Vec::new(),
+            cursor: (chunk.begin & 0xffff) as usize,
+            limit: 0,
+        };
+        reader.load_block()?;
+        Ok(reader)
+    }
+    fn load_block(&mut self) -> Result<(), BaiError> {
+        let address = self.next_block as u64;
+        if address > self.chunk_end >> 16 {
+            self.block.clear();
+            return Ok(());
+        }
+        let header = self
+            .data
+            .get(self.next_block..self.next_block + 18)
+            .ok_or(BaiError::Truncated)?;
+        if header[..3] != [31, 139, 8] || header[3] & 4 == 0 || header[12..14] != *b"BC" {
+            return Err(BaiError::InvalidMagic);
+        }
+        let size = u16::from_le_bytes(header[16..18].try_into().expect("BGZF size")) as usize + 1;
+        let encoded = self
+            .data
+            .get(self.next_block..self.next_block + size)
+            .ok_or(BaiError::Truncated)?;
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(Cursor::new(encoded))
+            .read_to_end(&mut decoded)
+            .map_err(|_| BaiError::Truncated)?;
+        self.next_block += size;
+        self.block = decoded;
+        self.cursor = 0;
+        self.limit = if address == self.chunk_end >> 16 {
+            (self.chunk_end & 0xffff) as usize
+        } else {
+            self.block.len()
+        };
+        self.limit = self.limit.min(self.block.len());
+        Ok(())
+    }
+}
+impl Read for BgzfChunkReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.cursor >= self.limit {
+            self.load_block()
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+            if self.block.is_empty() {
+                return Ok(0);
+            }
+        }
+        let count = out.len().min(self.limit - self.cursor);
+        out[..count].copy_from_slice(&self.block[self.cursor..self.cursor + count]);
+        self.cursor += count;
+        Ok(count)
+    }
 }
 
 fn take_bai<'a>(input: &'a [u8], cursor: &mut usize, length: usize) -> Result<&'a [u8], BaiError> {
@@ -326,26 +501,7 @@ pub fn query_bam_region_with_filter(
         {
             total_count += 1;
             if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
-                alignments.push(AlignmentSummary {
-                    read_name: record.read_name,
-                    start: record.start as u32,
-                    end: record.end,
-                    mapping_quality: record.mapping_quality,
-                    flags,
-                    cigar: record.cigar,
-                    left_clip: record.left_clip,
-                    right_clip: record.right_clip,
-                    mate_reference: record
-                        .mate_reference_index
-                        .try_into()
-                        .ok()
-                        .and_then(|index: usize| references.get(index))
-                        .map(|reference| reference.name.clone()),
-                    mate_start: u32::try_from(record.mate_start).ok(),
-                    blocks: record.blocks,
-                    deletions: record.deletions,
-                    insertions: record.insertions,
-                });
+                alignments.push(summary_from_record(record, flags, &references));
             }
         }
     }
@@ -354,6 +510,33 @@ pub fn query_bam_region_with_filter(
         truncated: total_count > alignments.len() as u64,
         alignments,
     })
+}
+
+fn summary_from_record(
+    record: DecodedRecord,
+    flags: AlignmentFlags,
+    references: &[ReferenceSequence],
+) -> AlignmentSummary {
+    AlignmentSummary {
+        read_name: record.read_name,
+        start: record.start as u32,
+        end: record.end,
+        mapping_quality: record.mapping_quality,
+        flags,
+        cigar: record.cigar,
+        left_clip: record.left_clip,
+        right_clip: record.right_clip,
+        mate_reference: record
+            .mate_reference_index
+            .try_into()
+            .ok()
+            .and_then(|index: usize| references.get(index))
+            .map(|reference| reference.name.clone()),
+        mate_start: u32::try_from(record.mate_start).ok(),
+        blocks: record.blocks,
+        deletions: record.deletions,
+        insertions: record.insertions,
+    }
 }
 
 fn read_bam_header(reader: &mut impl Read) -> Result<Vec<ReferenceSequence>, BamHeaderError> {
@@ -505,15 +688,18 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
 }
 
 fn clip_lengths(operations: &[u32]) -> (u32, u32) {
-    let clipping = |operation: u32| matches!(operation & 0x0f, 4 | 5).then_some(operation >> 4);
+    let is_clipping = |operation: &&u32| matches!(**operation & 0x0f, 4 | 5);
     let left = operations
-        .first()
-        .and_then(|operation| clipping(*operation))
-        .unwrap_or(0);
+        .iter()
+        .take_while(is_clipping)
+        .map(|operation| operation >> 4)
+        .sum();
     let right = operations
-        .last()
-        .and_then(|operation| clipping(*operation))
-        .unwrap_or(0);
+        .iter()
+        .rev()
+        .take_while(is_clipping)
+        .map(|operation| operation >> 4)
+        .sum();
     (left, right)
 }
 
@@ -768,9 +954,9 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        fasta_reference_slice, long_cigar_operations, parse_bai_index, parse_bam_header,
-        parse_fai_references, parse_fasta_references, query_bam_reference, query_bam_region,
-        BaiError, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
+        clip_lengths, fasta_reference_slice, long_cigar_operations, parse_bai_index,
+        parse_bam_header, parse_fai_references, parse_fasta_references, query_bam_reference,
+        query_bam_region, BaiError, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -1031,5 +1217,19 @@ mod tests {
     fn rejects_invalid_bai_magic_and_truncation() {
         assert_eq!(parse_bai_index(b"nope"), Err(BaiError::InvalidMagic));
         assert_eq!(parse_bai_index(b"BAI\x01\x01"), Err(BaiError::Truncated));
+    }
+
+    #[test]
+    fn sums_mixed_terminal_hard_and_soft_clipping() {
+        assert_eq!(
+            clip_lengths(&[
+                (5 << 4) | 5,
+                (10 << 4) | 4,
+                80 << 4,
+                (5 << 4) | 4,
+                (5 << 4) | 5
+            ]),
+            (15, 10)
+        );
     }
 }

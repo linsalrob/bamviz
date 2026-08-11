@@ -50,6 +50,32 @@ pub fn query_bam_region_filtered_json(
         .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
 }
 
+#[wasm_bindgen]
+pub fn query_bam_region_indexed_filtered_json(
+    bytes: &[u8],
+    bai: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+    filter: JsValue,
+) -> Result<JsValue, JsValue> {
+    let filter: bamviz_core::AlignmentFilter = serde_wasm_bindgen::from_value(filter)
+        .map_err(|error| JsValue::from_str(&format!("Invalid alignment filter: {error}")))?;
+    let query = bamviz_formats::query_bam_region_indexed_with_filter(
+        bytes,
+        bai,
+        reference_index,
+        start,
+        end,
+        filter,
+    )
+    .map_err(|error| {
+        JsValue::from_str(&format!("Could not read indexed BAM alignments: {error}"))
+    })?;
+    serde_wasm_bindgen::to_value(&query)
+        .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
+}
+
 /// Parsed local FASTA retained in WASM so viewport updates do not reparse the file.
 #[wasm_bindgen]
 pub struct FastaFile {

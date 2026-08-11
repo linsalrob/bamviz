@@ -2,7 +2,7 @@
   import { afterUpdate, onMount } from 'svelte'
   import type { AlignmentFilter, AlignmentSummary, BaiIndexSummary, BrowserError, ReferenceSequence } from './lib/types'
   import type { CachedFasta } from './lib/wasm'
-  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBaiIndex, parseBamHeader, parseFaiReferences, queryBamRegionFiltered } from './lib/wasm'
+  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBaiIndex, parseBamHeader, parseFaiReferences, queryBamRegionFiltered, queryBamRegionIndexedFiltered } from './lib/wasm'
 
   let references: ReferenceSequence[] = []
   let selectedReference = ''
@@ -14,6 +14,7 @@
   let baiInput: HTMLInputElement
   let bamBytes: Uint8Array | null = null
   let baiIndex: BaiIndexSummary | null = null
+  let baiBytes: Uint8Array | null = null
   let baiStatus = ''
   let alignments: AlignmentSummary[] = []
   let alignmentCount = 0
@@ -80,7 +81,9 @@
   async function loadBai(file: File) {
     baiStatus = `Reading ${file.name}…`
     try {
-      baiIndex = await parseBaiIndex(new Uint8Array(await file.arrayBuffer()))
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      baiIndex = await parseBaiIndex(bytes)
+      baiBytes = bytes
       updateBaiStatus()
     } catch (caught) { baiStatus = caught instanceof Error ? caught.message : String(caught) }
   }
@@ -147,6 +150,11 @@
   }
 
   function applyFilter() {
+    const mapq = Number(alignmentFilter.min_mapping_quality)
+    alignmentFilter = {
+      ...alignmentFilter,
+      min_mapping_quality: Number.isFinite(mapq) ? Math.min(255, Math.max(0, Math.trunc(mapq))) : 0,
+    }
     selectedAlignment = null
     void loadSelectedReference()
   }
@@ -250,10 +258,15 @@
     alignmentState = 'loading'
     error = null
     try {
-      const result = await queryBamRegionFiltered(bamBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd), alignmentFilter)
+      const result = baiBytes && baiIndex?.references.length === references.length && (baiIndex.references[referenceIndex]?.chunk_count ?? 0) > 0
+        ? await queryBamRegionIndexedFiltered(bamBytes, baiBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd), alignmentFilter)
+        : await queryBamRegionFiltered(bamBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd), alignmentFilter)
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
+      const previousSelection = selectedAlignment
       alignments = result.alignments
-      if (selectedAlignment && !alignments.some((alignment) => alignment.read_name === selectedAlignment?.read_name && alignment.start === selectedAlignment.start)) selectedAlignment = null
+      selectedAlignment = previousSelection
+        ? alignments.find((alignment) => alignment.read_name === previousSelection.read_name && alignment.start === previousSelection.start && alignment.end === previousSelection.end) ?? null
+        : null
       alignmentCount = result.total_count
       alignmentsTruncated = result.truncated
       alignmentState = 'ready'
@@ -301,7 +314,7 @@
     <button onclick={() => fileInput.click()}>Choose BAM</button>
     <input bind:this={baiInput} type="file" accept=".bai,application/octet-stream" onchange={(event) => event.currentTarget.files?.[0] && void loadBai(event.currentTarget.files[0])} />
     <button onclick={() => baiInput.click()}>Add BAI</button>
-    <small>BAM headers and selected-contig alignments are decoded locally. BAI parsing validates local index metadata; indexed record seeking is the next performance step.</small>{#if baiStatus}<small role="status">{baiStatus}</small>{/if}
+    <small>BAM headers and selected-contig alignments are decoded locally. A matching BAI enables indexed BGZF region reads; BAM-only sessions use the sequential fallback.</small>{#if baiStatus}<small role="status">{baiStatus}</small>{/if}
   </section>
   <section class="reference-loader" aria-label="Optional reference files"><h2>Optional reference context</h2><p>Load a FASTA to display reference bases. An FAI is an index only and does not provide sequence.</p><input bind:this={fastaInput} type="file" accept=".fa,.fasta,.fna,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFasta(event.currentTarget.files[0])} /><button onclick={() => fastaInput.click()}>Choose FASTA</button><input bind:this={faiInput} type="file" accept=".fai,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFai(event.currentTarget.files[0])} /><button onclick={() => faiInput.click()}>Choose FAI</button>{#if fastaStatus}<small role="status">{fastaStatus}</small>{/if}</section>
 
@@ -334,7 +347,7 @@
                   <button class:selected={selectedAlignment === alignment} class="alignment" onclick={() => selectedAlignment = alignment}><span><strong>{alignment.read_name}</strong><br />{(alignment.start + 1).toLocaleString()}–{alignment.end.toLocaleString()}</span><span><code>{alignment.cigar || '*'}</code>{#if alignment.left_clip || alignment.right_clip}<br /><small>{alignment.left_clip}′ / {alignment.right_clip}′ clipped</small>{/if}</span><span>{alignment.mapping_quality}</span><span>{alignment.flags.is_reverse ? '−' : '+'}{alignment.flags.is_secondary ? ' secondary' : ''}{alignment.flags.is_supplementary ? ' supplementary' : ''}{alignment.flags.is_duplicate ? ' duplicate' : ''}</span></button>
                 {/each}
               </div>
-              {#if selectedAlignment}<section class="read-details" aria-label="Selected read details"><h3>{selectedAlignment.read_name}</h3><dl><dt>Position</dt><dd>{(selectedAlignment.start + 1).toLocaleString()}–{selectedAlignment.end.toLocaleString()} (1-based)</dd><dt>CIGAR</dt><dd><code>{selectedAlignment.cigar}</code></dd><dt>Mapping quality</dt><dd>{selectedAlignment.mapping_quality}</dd><dt>Flags</dt><dd>{selectedAlignment.flags.raw} ({selectedAlignment.flags.is_reverse ? 'reverse' : 'forward'} strand{selectedAlignment.flags.is_paired ? ', paired' : ''}{selectedAlignment.flags.is_proper_pair ? ', proper pair' : ''})</dd><dt>Clipping</dt><dd>{selectedAlignment.left_clip}′ left; {selectedAlignment.right_clip}′ right</dd><dt>Mate</dt><dd>{selectedAlignment.mate_reference ? `${selectedAlignment.mate_reference}:${(selectedAlignment.mate_start ?? 0) + 1}${selectedAlignment.flags.mate_is_reverse ? ' (reverse)' : ''}` : 'not available'}</dd></dl></section>{/if}
+              {#if selectedAlignment}<section class="read-details" aria-label="Selected read details"><h3>{selectedAlignment.read_name}</h3><dl><dt>Position</dt><dd>{(selectedAlignment.start + 1).toLocaleString()}–{selectedAlignment.end.toLocaleString()} (1-based)</dd><dt>CIGAR</dt><dd><code>{selectedAlignment.cigar}</code></dd><dt>Mapping quality</dt><dd>{selectedAlignment.mapping_quality}</dd><dt>Flags</dt><dd>{selectedAlignment.flags.raw} ({selectedAlignment.flags.is_reverse ? 'reverse' : 'forward'} strand{selectedAlignment.flags.is_paired ? ', paired' : ''}{selectedAlignment.flags.is_proper_pair ? ', proper pair' : ''})</dd><dt>Clipping</dt><dd>{selectedAlignment.left_clip}′ left; {selectedAlignment.right_clip}′ right</dd><dt>Mate</dt><dd>{#if selectedAlignment.mate_reference && selectedAlignment.mate_start !== null}{selectedAlignment.mate_reference}:{(selectedAlignment.mate_start + 1).toLocaleString()}{selectedAlignment.flags.mate_is_reverse ? ' (reverse)' : ''}{:else}not available{/if}</dd></dl></section>{/if}
               {#if alignmentsTruncated}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
             {/if}
           {/if}

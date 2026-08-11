@@ -30,9 +30,9 @@ filter the visible-region query by mapping quality and secondary,
 supplementary, or duplicate status, then select a read for its details.
 
 BAI files can now be dropped onto the loader or selected with **Add BAI**. The
-browser parses their local binning and linear-index summaries and checks their
-reference count against the BAM. Alignments continue to use the safe sequential
-fallback until indexed BGZF record seeking is added.
+browser parses their local binning and linear-index summaries, checks their
+reference count against the BAM, and uses matching BAI chunks for indexed BGZF
+region reads. BAM-only sessions retain the safe sequential fallback.
 
 ## Project goals
 
