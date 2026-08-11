@@ -35,6 +35,7 @@
   let viewStart = 0
   let viewEnd = 1
   let drag: { x: number; start: number; end: number } | null = null
+  let viewportRefreshFrame: number | null = null
 
   $: selectedReferenceData = references.find((reference) => reference.name === selectedReference)
 
@@ -145,8 +146,12 @@
   }
 
   function refreshViewport() {
-    void refreshReferenceContext()
-    void loadSelectedReference()
+    if (viewportRefreshFrame !== null) return
+    viewportRefreshFrame = requestAnimationFrame(() => {
+      viewportRefreshFrame = null
+      void refreshReferenceContext()
+      void loadSelectedReference()
+    })
   }
 
   function applyFilter() {
@@ -191,7 +196,7 @@
   function drawCanvas() {
     if (!canvas || !selectedReferenceData) return
     const cssWidth = canvas.clientWidth
-    const cssHeight = 250
+    const cssHeight = 420
     if (!cssWidth) return
     const ratio = window.devicePixelRatio || 1
     canvas.width = Math.floor(cssWidth * ratio); canvas.height = cssHeight * ratio
@@ -203,11 +208,16 @@
     const toX = (position: number) => (position - viewStart) / basesPerPixel
     context.fillStyle = '#315b6d'; context.font = '12px system-ui'
     context.fillText(`${Math.floor(viewStart + 1).toLocaleString()}–${Math.ceil(viewEnd).toLocaleString()} (1-based)`, 8, 16)
+    const overviewLeft = 8; const overviewWidth = cssWidth - 16
+    context.fillStyle = '#d2dde4'; context.fillRect(overviewLeft, 24, overviewWidth, 10)
+    const overviewStart = overviewLeft + overviewWidth * viewStart / selectedReferenceData.length
+    const overviewEnd = overviewLeft + overviewWidth * viewEnd / selectedReferenceData.length
+    context.fillStyle = '#176d7d'; context.fillRect(overviewStart, 24, Math.max(2, overviewEnd - overviewStart), 10)
     if (referenceBases && basesPerPixel <= 0.15) {
       context.fillStyle = '#172433'
       for (let index = 0; index < referenceBases.length; index++) {
         const position = referenceBasesStart + index
-        if (position >= viewStart && position < viewEnd) context.fillText(referenceBases[index], toX(position) + 1, 30)
+        if (position >= viewStart && position < viewEnd) context.fillText(referenceBases[index], toX(position) + 1, 48)
       }
     }
     const lanes: number[] = []
@@ -215,7 +225,7 @@
       if (alignment.end <= viewStart || alignment.start >= viewEnd) continue
       let lane = lanes.findIndex((end) => end <= alignment.start)
       if (lane === -1) { lane = lanes.length; lanes.push(alignment.end) } else lanes[lane] = alignment.end
-      const y = (referenceBases ? 45 : 30) + lane * 19
+      const y = (referenceBases ? 62 : 45) + lane * 19
       if (y > cssHeight - 10) continue
       const left = toX(Math.max(alignment.start, viewStart)); const right = toX(Math.min(alignment.end, viewEnd))
       context.fillStyle = alignment.flags.is_reverse ? '#6f58a7' : '#176d7d'
@@ -248,7 +258,13 @@
     }
   }
 
-  onMount(() => { window.addEventListener('resize', drawCanvas); return () => window.removeEventListener('resize', drawCanvas) })
+  onMount(() => {
+    window.addEventListener('resize', drawCanvas)
+    return () => {
+      window.removeEventListener('resize', drawCanvas)
+      if (viewportRefreshFrame !== null) cancelAnimationFrame(viewportRefreshFrame)
+    }
+  })
   afterUpdate(drawCanvas)
 
   async function loadSelectedReference(expectedLoadGeneration = loadGeneration) {
@@ -366,6 +382,6 @@
   .file-loader, .reference-loader { display: grid; gap: .8rem; border: 2px dashed #53788b; text-align: center } .file-loader input, .reference-loader input { display: none } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } small { color: #536473 }
   .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
   .alignment-filters { display:flex; flex-wrap:wrap; gap:.7rem; border:1px solid #d2dde4; border-radius:.25rem }.alignment-filters label { display:flex; align-items:center; gap:.25rem }.alignment-filters input[type=number] { width:5rem }.alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .9fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment { width:100%; color:inherit; text-align:left; background:#fff; border:0; border-radius:0 }.alignment:nth-child(odd) { background: #f4f8fa }.alignment.selected { outline:2px solid #176d7d; outline-offset:-2px }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }.read-details { margin-top:.7rem; background:#f4f8fa }.read-details h3 { margin-top:0 }.read-details dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:0 }.read-details dt { font-weight:700 }.read-details dd { margin:0 }
-  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:250px; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
+  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:420px; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column } }
 </style>

@@ -29,6 +29,10 @@ flags, strand, clipping, mate coordinates, and mapping quality. Users can
 filter the visible-region query by mapping quality and secondary,
 supplementary, or duplicate status, then select a read for its details.
 
+M6 performance work has begun: pan and zoom updates are coalesced to one
+viewport query per animation frame, preventing high-frequency pointer events
+from issuing redundant local BAM/BAI reads.
+
 BAI files can now be dropped onto the loader or selected with **Add BAI**. The
 browser parses their local binning and linear-index summaries, checks their
 reference count against the BAM, and uses matching BAI chunks for indexed BGZF
