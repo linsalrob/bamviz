@@ -28,6 +28,7 @@ dependencies = [
 name = "bamviz-wasm"
 version = "0.1.0"
 dependencies = [
+ "bamviz-core",
  "bamviz-formats",
  "serde-wasm-bindgen",
  "wasm-bindgen",
