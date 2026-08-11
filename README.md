@@ -24,6 +24,11 @@ deletions, and insertions for base-scale rendering. Optional FASTA loading
 adds visible reference bases; optional FAI loading is recognised as index
 metadata only and never treated as sequence data.
 
+M5 alignment inspection is implemented: the viewer exposes read names, SAM
+flags, strand, clipping, mate coordinates, and mapping quality. Users can
+filter the visible-region query by mapping quality and secondary,
+supplementary, or duplicate status, then select a read for its details.
+
 ## Project goals
 
 The core user workflow should be:

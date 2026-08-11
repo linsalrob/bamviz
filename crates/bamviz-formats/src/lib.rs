@@ -3,8 +3,8 @@
 use std::io::Read;
 
 use bamviz_core::{
-    AlignedBlock, AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence,
-    ReferenceSpan,
+    AlignedBlock, AlignmentFilter, AlignmentFlags, AlignmentQueryResult, AlignmentSummary,
+    Insertion, ReferenceSequence, ReferenceSpan,
 };
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
@@ -152,7 +152,13 @@ pub fn query_bam_reference(
     input: &[u8],
     reference_index: usize,
 ) -> Result<AlignmentQueryResult, BamHeaderError> {
-    query_bam_region(input, reference_index, 0, u32::MAX)
+    query_bam_region_with_filter(
+        input,
+        reference_index,
+        0,
+        u32::MAX,
+        AlignmentFilter::default(),
+    )
 }
 
 /// Sequentially scans mapped alignments overlapping a 0-based half-open region.
@@ -164,6 +170,23 @@ pub fn query_bam_region(
     reference_index: usize,
     start: u32,
     end: u32,
+) -> Result<AlignmentQueryResult, BamHeaderError> {
+    query_bam_region_with_filter(
+        input,
+        reference_index,
+        start,
+        end,
+        AlignmentFilter::default(),
+    )
+}
+
+/// Sequentially scans mapped alignments overlapping a region with Rust-owned filters.
+pub fn query_bam_region_with_filter(
+    input: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+    filter: AlignmentFilter,
 ) -> Result<AlignmentQueryResult, BamHeaderError> {
     let mut decoded = MultiGzDecoder::new(input);
     let references = read_bam_header(&mut decoded)?;
@@ -178,20 +201,32 @@ pub fn query_bam_region(
     let mut alignments = Vec::new();
     let mut total_count = 0_u64;
     while let Some(record) = read_bam_record(&mut decoded)? {
+        let flags = AlignmentFlags::from_sam_flags(record.flags);
         if record.reference_index == reference_index as i32
             && record.start >= 0
             && record.flags & 0x4 == 0
             && (record.start as u32) < end
             && record.end > start
+            && filter.matches(record.mapping_quality, &flags)
         {
             total_count += 1;
             if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
                 alignments.push(AlignmentSummary {
+                    read_name: record.read_name,
                     start: record.start as u32,
                     end: record.end,
                     mapping_quality: record.mapping_quality,
-                    is_reverse: record.flags & 0x10 != 0,
+                    flags,
                     cigar: record.cigar,
+                    left_clip: record.left_clip,
+                    right_clip: record.right_clip,
+                    mate_reference: record
+                        .mate_reference_index
+                        .try_into()
+                        .ok()
+                        .and_then(|index: usize| references.get(index))
+                        .map(|reference| reference.name.clone()),
+                    mate_start: u32::try_from(record.mate_start).ok(),
                     blocks: record.blocks,
                     deletions: record.deletions,
                     insertions: record.insertions,
@@ -250,15 +285,20 @@ fn read_bam_header(reader: &mut impl Read) -> Result<Vec<ReferenceSequence>, Bam
 }
 
 struct DecodedRecord {
+    read_name: String,
     reference_index: i32,
     start: i32,
     end: u32,
     mapping_quality: u8,
     flags: u16,
+    mate_reference_index: i32,
+    mate_start: i32,
     cigar: String,
     blocks: Vec<AlignedBlock>,
     deletions: Vec<ReferenceSpan>,
     insertions: Vec<Insertion>,
+    left_clip: u32,
+    right_clip: u32,
 }
 
 type CigarProjection = (Vec<AlignedBlock>, Vec<ReferenceSpan>, Vec<Insertion>);
@@ -282,6 +322,9 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
         u16::from_le_bytes(block[12..14].try_into().expect("fixed BAM record")) as usize;
     let flags = u16::from_le_bytes(block[14..16].try_into().expect("fixed BAM record"));
     let sequence_length = i32::from_le_bytes(block[16..20].try_into().expect("fixed BAM record"));
+    let mate_reference_index =
+        i32::from_le_bytes(block[20..24].try_into().expect("fixed BAM record"));
+    let mate_start = i32::from_le_bytes(block[24..28].try_into().expect("fixed BAM record"));
     let sequence_length =
         usize::try_from(sequence_length).map_err(|_| BamHeaderError::InvalidRecordSize)?;
     let cigar_start = 32usize
@@ -301,6 +344,11 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
     if minimum_size > block.len() {
         return Err(BamHeaderError::InvalidRecordSize);
     }
+    let read_name = block[32..cigar_start]
+        .strip_suffix(&[0])
+        .and_then(|name| std::str::from_utf8(name).ok())
+        .ok_or(BamHeaderError::InvalidRecordSize)?
+        .to_owned();
 
     let core_cigar = block[cigar_start..cigar_end]
         .chunks_exact(4)
@@ -309,6 +357,7 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
     let auxiliary_start = minimum_size;
     let cigar_operations = long_cigar_operations(&block[auxiliary_start..])?.unwrap_or(core_cigar);
     let (reference_span, cigar) = decode_cigar_operations(&cigar_operations)?;
+    let (left_clip, right_clip) = clip_lengths(&cigar_operations);
     let sequence = decode_sequence(
         &block[cigar_end..cigar_end + sequence_bytes],
         sequence_length,
@@ -323,16 +372,34 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
     };
     let (blocks, deletions, insertions) = project_cigar(start, &cigar_operations, &sequence)?;
     Ok(Some(DecodedRecord {
+        read_name,
         reference_index,
         start,
         end,
         mapping_quality,
         flags,
+        mate_reference_index,
+        mate_start,
         cigar,
         blocks,
         deletions,
         insertions,
+        left_clip,
+        right_clip,
     }))
+}
+
+fn clip_lengths(operations: &[u32]) -> (u32, u32) {
+    let clipping = |operation: u32| matches!(operation & 0x0f, 4 | 5).then_some(operation >> 4);
+    let left = operations
+        .first()
+        .and_then(|operation| clipping(*operation))
+        .unwrap_or(0);
+    let right = operations
+        .last()
+        .and_then(|operation| clipping(*operation))
+        .unwrap_or(0);
+    (left, right)
 }
 
 fn decode_sequence(encoded: &[u8], length: usize) -> String {
@@ -698,11 +765,16 @@ mod tests {
             bamviz_core::AlignmentQueryResult {
                 total_count: 1,
                 alignments: vec![bamviz_core::AlignmentSummary {
+                    read_name: "r".into(),
                     start: 10,
                     end: 18,
                     mapping_quality: 60,
-                    is_reverse: false,
+                    flags: bamviz_core::AlignmentFlags::from_sam_flags(0),
                     cigar: "5M2I3D".into(),
+                    left_clip: 0,
+                    right_clip: 0,
+                    mate_reference: None,
+                    mate_start: None,
                     blocks: vec![bamviz_core::AlignedBlock {
                         start: 10,
                         end: 15,
@@ -722,11 +794,16 @@ mod tests {
             bamviz_core::AlignmentQueryResult {
                 total_count: 1,
                 alignments: vec![bamviz_core::AlignmentSummary {
+                    read_name: "r".into(),
                     start: 4,
                     end: 12,
                     mapping_quality: 12,
-                    is_reverse: true,
+                    flags: bamviz_core::AlignmentFlags::from_sam_flags(0x10),
                     cigar: "8=".into(),
+                    left_clip: 0,
+                    right_clip: 0,
+                    mate_reference: None,
+                    mate_start: None,
                     blocks: vec![bamviz_core::AlignedBlock {
                         start: 4,
                         end: 12,

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { afterUpdate, onMount } from 'svelte'
-  import type { AlignmentSummary, BrowserError, ReferenceSequence } from './lib/types'
+  import type { AlignmentFilter, AlignmentSummary, BrowserError, ReferenceSequence } from './lib/types'
   import type { CachedFasta } from './lib/wasm'
-  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBamHeader, parseFaiReferences, queryBamRegion } from './lib/wasm'
+  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBamHeader, parseFaiReferences, queryBamRegionFiltered } from './lib/wasm'
 
   let references: ReferenceSequence[] = []
   let selectedReference = ''
@@ -15,6 +15,8 @@
   let alignments: AlignmentSummary[] = []
   let alignmentCount = 0
   let alignmentsTruncated = false
+  let selectedAlignment: AlignmentSummary | null = null
+  let alignmentFilter: AlignmentFilter = { min_mapping_quality: 0, include_secondary: true, include_supplementary: true, include_duplicates: true }
   let alignmentState: 'idle' | 'loading' | 'ready' = 'idle'
   let loadGeneration = 0
   let queryGeneration = 0
@@ -36,6 +38,7 @@
     const generation = ++loadGeneration
     references = []
     alignments = []
+    selectedAlignment = null
     alignmentCount = 0
     alignmentsTruncated = false
     selectedReference = ''
@@ -123,6 +126,11 @@
     void loadSelectedReference()
   }
 
+  function applyFilter() {
+    selectedAlignment = null
+    void loadSelectedReference()
+  }
+
   function zoomCanvas(event: WheelEvent) {
     event.preventDefault()
     if (!canvas || !selectedReferenceData) return
@@ -182,7 +190,7 @@
       const y = (referenceBases ? 45 : 30) + lane * 19
       if (y > cssHeight - 10) continue
       const left = toX(Math.max(alignment.start, viewStart)); const right = toX(Math.min(alignment.end, viewEnd))
-      context.fillStyle = alignment.is_reverse ? '#6f58a7' : '#176d7d'
+      context.fillStyle = alignment.flags.is_reverse ? '#6f58a7' : '#176d7d'
       context.fillRect(left, y, Math.max(1, right - left), 13)
       if (basesPerPixel <= 1.5) {
         for (const block of alignment.blocks) {
@@ -222,9 +230,10 @@
     alignmentState = 'loading'
     error = null
     try {
-      const result = await queryBamRegion(bamBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd))
+      const result = await queryBamRegionFiltered(bamBytes, referenceIndex, Math.floor(viewStart), Math.ceil(viewEnd), alignmentFilter)
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       alignments = result.alignments
+      if (selectedAlignment && !alignments.some((alignment) => alignment.read_name === selectedAlignment?.read_name && alignment.start === selectedAlignment.start)) selectedAlignment = null
       alignmentCount = result.total_count
       alignmentsTruncated = result.truncated
       alignmentState = 'ready'
@@ -283,15 +292,17 @@
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
           {#if alignmentState === 'ready'}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
+            <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView()}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output>{Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas>
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
-                <div class="alignment-heading"><span>Position (1-based)</span><span>CIGAR</span><span>MAPQ</span><span>Strand</span></div>
+                <div class="alignment-heading"><span>Read / position (1-based)</span><span>CIGAR / clipping</span><span>MAPQ</span><span>Flags</span></div>
                 {#each alignments.slice(0, 100) as alignment}
-                  <div class="alignment"><span>{(alignment.start + 1).toLocaleString()}–{alignment.end.toLocaleString()}</span><code>{alignment.cigar || '*'}</code><span>{alignment.mapping_quality}</span><span>{alignment.is_reverse ? '−' : '+'}</span></div>
+                  <button class:selected={selectedAlignment === alignment} class="alignment" onclick={() => selectedAlignment = alignment}><span><strong>{alignment.read_name}</strong><br />{(alignment.start + 1).toLocaleString()}–{alignment.end.toLocaleString()}</span><span><code>{alignment.cigar || '*'}</code>{#if alignment.left_clip || alignment.right_clip}<br /><small>{alignment.left_clip}′ / {alignment.right_clip}′ clipped</small>{/if}</span><span>{alignment.mapping_quality}</span><span>{alignment.flags.is_reverse ? '−' : '+'}{alignment.flags.is_secondary ? ' secondary' : ''}{alignment.flags.is_supplementary ? ' supplementary' : ''}{alignment.flags.is_duplicate ? ' duplicate' : ''}</span></button>
                 {/each}
               </div>
+              {#if selectedAlignment}<section class="read-details" aria-label="Selected read details"><h3>{selectedAlignment.read_name}</h3><dl><dt>Position</dt><dd>{(selectedAlignment.start + 1).toLocaleString()}–{selectedAlignment.end.toLocaleString()} (1-based)</dd><dt>CIGAR</dt><dd><code>{selectedAlignment.cigar}</code></dd><dt>Mapping quality</dt><dd>{selectedAlignment.mapping_quality}</dd><dt>Flags</dt><dd>{selectedAlignment.flags.raw} ({selectedAlignment.flags.is_reverse ? 'reverse' : 'forward'} strand{selectedAlignment.flags.is_paired ? ', paired' : ''}{selectedAlignment.flags.is_proper_pair ? ', proper pair' : ''})</dd><dt>Clipping</dt><dd>{selectedAlignment.left_clip}′ left; {selectedAlignment.right_clip}′ right</dd><dt>Mate</dt><dd>{selectedAlignment.mate_reference ? `${selectedAlignment.mate_reference}:${(selectedAlignment.mate_start ?? 0) + 1}${selectedAlignment.flags.mate_is_reverse ? ' (reverse)' : ''}` : 'not available'}</dd></dl></section>{/if}
               {#if alignmentsTruncated}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
             {/if}
           {/if}
@@ -309,7 +320,7 @@
   main { display: grid; gap: 1rem; max-width: 1100px; margin: auto; padding: 1rem } section { background: #fff; border: 1px solid #c6d3dc; border-radius: .5rem; padding: 1rem } h2 { margin-top: 0 }
   .file-loader, .reference-loader { display: grid; gap: .8rem; border: 2px dashed #53788b; text-align: center } .file-loader input, .reference-loader input { display: none } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } small { color: #536473 }
   .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
-  .alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .5fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment:nth-child(odd) { background: #f4f8fa }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }
+  .alignment-filters { display:flex; flex-wrap:wrap; gap:.7rem; border:1px solid #d2dde4; border-radius:.25rem }.alignment-filters label { display:flex; align-items:center; gap:.25rem }.alignment-filters input[type=number] { width:5rem }.alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .9fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment { width:100%; color:inherit; text-align:left; background:#fff; border:0; border-radius:0 }.alignment:nth-child(odd) { background: #f4f8fa }.alignment.selected { outline:2px solid #176d7d; outline-offset:-2px }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }.read-details { margin-top:.7rem; background:#f4f8fa }.read-details h3 { margin-top:0 }.read-details dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:0 }.read-details dt { font-weight:700 }.read-details dd { margin:0 }
   .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:250px; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column } }
 </style>
