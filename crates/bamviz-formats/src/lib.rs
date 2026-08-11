@@ -2,13 +2,115 @@
 
 use std::io::Read;
 
-use bamviz_core::{AlignmentQueryResult, AlignmentSummary, ReferenceSequence};
+use bamviz_core::{
+    AlignedBlock, AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence,
+    ReferenceSpan,
+};
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
 
 const BAM_MAGIC: &[u8; 4] = b"BAM\x01";
 /// Kept in sync with the number of rows rendered by the M1 browser view.
 pub const MAX_ALIGNMENT_SUMMARIES: usize = 100;
+
+#[derive(Debug, Error, PartialEq)]
+pub enum FastaError {
+    #[error("the FASTA file has no records")]
+    NoRecords,
+    #[error("the FASTA file has an empty record name")]
+    EmptyName,
+    #[error("reference {0} was not found in the FASTA")]
+    MissingReference(String),
+}
+
+/// Parsed FASTA records retained for repeated local reference slices.
+pub struct FastaRecords {
+    records: Vec<(String, String)>,
+}
+
+impl FastaRecords {
+    pub fn parse(input: &[u8]) -> Result<Self, FastaError> {
+        let text = String::from_utf8_lossy(input);
+        let mut records = Vec::new();
+        let mut name: Option<String> = None;
+        let mut sequence = String::new();
+        for line in text.lines() {
+            if let Some(header) = line.strip_prefix('>') {
+                if let Some(previous) = name.take() {
+                    records.push((previous, std::mem::take(&mut sequence)));
+                }
+                let next = header.split_whitespace().next().unwrap_or_default();
+                if next.is_empty() {
+                    return Err(FastaError::EmptyName);
+                }
+                name = Some(next.into());
+            } else if name.is_some() {
+                sequence.extend(
+                    line.bytes()
+                        .filter(|byte| !byte.is_ascii_whitespace())
+                        .map(|byte| (byte as char).to_ascii_uppercase()),
+                );
+            }
+        }
+        if let Some(previous) = name {
+            records.push((previous, sequence));
+        }
+        if records.is_empty() {
+            Err(FastaError::NoRecords)
+        } else {
+            Ok(Self { records })
+        }
+    }
+
+    pub fn references(&self) -> Vec<ReferenceSequence> {
+        self.records
+            .iter()
+            .map(|(name, sequence)| ReferenceSequence::new(name, sequence.len() as u32))
+            .collect()
+    }
+
+    pub fn reference_slice(&self, name: &str, start: u32, end: u32) -> Result<String, FastaError> {
+        let (_, sequence) = self
+            .records
+            .iter()
+            .find(|(record_name, _)| record_name == name)
+            .ok_or_else(|| FastaError::MissingReference(name.into()))?;
+        let start = start.min(sequence.len() as u32) as usize;
+        let end = end.min(sequence.len() as u32).max(start as u32) as usize;
+        Ok(sequence[start..end].to_string())
+    }
+}
+
+pub fn parse_fasta_references(input: &[u8]) -> Result<Vec<ReferenceSequence>, FastaError> {
+    Ok(FastaRecords::parse(input)?.references())
+}
+
+pub fn fasta_reference_slice(
+    input: &[u8],
+    name: &str,
+    start: u32,
+    end: u32,
+) -> Result<String, FastaError> {
+    FastaRecords::parse(input)?.reference_slice(name, start, end)
+}
+
+pub fn parse_fai_references(input: &[u8]) -> Result<Vec<ReferenceSequence>, FastaError> {
+    let references = std::str::from_utf8(input)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            let name = columns.next()?.trim();
+            let length = columns.next()?.parse::<u32>().ok()?;
+            (!name.is_empty()).then(|| ReferenceSequence::new(name, length))
+        })
+        .collect::<Vec<_>>();
+    if references.is_empty() {
+        Err(FastaError::NoRecords)
+    } else {
+        Ok(references)
+    }
+}
 
 #[derive(Debug, Error, PartialEq)]
 pub enum BamHeaderError {
@@ -50,6 +152,19 @@ pub fn query_bam_reference(
     input: &[u8],
     reference_index: usize,
 ) -> Result<AlignmentQueryResult, BamHeaderError> {
+    query_bam_region(input, reference_index, 0, u32::MAX)
+}
+
+/// Sequentially scans mapped alignments overlapping a 0-based half-open region.
+///
+/// This preserves bounded browser DTOs while ensuring the unindexed fallback renders
+/// the current viewport rather than an unrelated prefix of the contig.
+pub fn query_bam_region(
+    input: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+) -> Result<AlignmentQueryResult, BamHeaderError> {
     let mut decoded = MultiGzDecoder::new(input);
     let references = read_bam_header(&mut decoded)?;
     if reference_index >= references.len() {
@@ -66,6 +181,8 @@ pub fn query_bam_reference(
         if record.reference_index == reference_index as i32
             && record.start >= 0
             && record.flags & 0x4 == 0
+            && (record.start as u32) < end
+            && record.end > start
         {
             total_count += 1;
             if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
@@ -75,6 +192,9 @@ pub fn query_bam_reference(
                     mapping_quality: record.mapping_quality,
                     is_reverse: record.flags & 0x10 != 0,
                     cigar: record.cigar,
+                    blocks: record.blocks,
+                    deletions: record.deletions,
+                    insertions: record.insertions,
                 });
             }
         }
@@ -136,7 +256,12 @@ struct DecodedRecord {
     mapping_quality: u8,
     flags: u16,
     cigar: String,
+    blocks: Vec<AlignedBlock>,
+    deletions: Vec<ReferenceSpan>,
+    insertions: Vec<Insertion>,
 }
+
+type CigarProjection = (Vec<AlignedBlock>, Vec<ReferenceSpan>, Vec<Insertion>);
 
 fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamHeaderError> {
     let Some(block_size) = read_optional_i32(reader)? else {
@@ -184,6 +309,10 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
     let auxiliary_start = minimum_size;
     let cigar_operations = long_cigar_operations(&block[auxiliary_start..])?.unwrap_or(core_cigar);
     let (reference_span, cigar) = decode_cigar_operations(&cigar_operations)?;
+    let sequence = decode_sequence(
+        &block[cigar_end..cigar_end + sequence_bytes],
+        sequence_length,
+    );
     let end = if start < 0 {
         0
     } else {
@@ -192,6 +321,7 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
             .and_then(|start| start.checked_add(reference_span))
             .ok_or(BamHeaderError::InvalidRecordSize)?
     };
+    let (blocks, deletions, insertions) = project_cigar(start, &cigar_operations, &sequence)?;
     Ok(Some(DecodedRecord {
         reference_index,
         start,
@@ -199,7 +329,105 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
         mapping_quality,
         flags,
         cigar,
+        blocks,
+        deletions,
+        insertions,
     }))
+}
+
+fn decode_sequence(encoded: &[u8], length: usize) -> String {
+    let decode = |code: u8| match code {
+        1 => 'A',
+        2 => 'C',
+        4 => 'G',
+        8 => 'T',
+        15 => 'N',
+        _ => 'N',
+    };
+    encoded
+        .iter()
+        .flat_map(|byte| [decode(byte >> 4), decode(byte & 0x0f)])
+        .take(length)
+        .collect()
+}
+
+fn project_cigar(
+    start: i32,
+    operations: &[u32],
+    sequence: &str,
+) -> Result<CigarProjection, BamHeaderError> {
+    if start < 0 {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+    let mut reference = start as u32;
+    let mut query = 0_usize;
+    let bases = sequence.as_bytes();
+    let mut blocks = Vec::new();
+    let mut deletions = Vec::new();
+    let mut insertions = Vec::new();
+    for encoded in operations {
+        let length = (encoded >> 4) as usize;
+        match encoded & 0x0f {
+            0 | 7 | 8 => {
+                let end_query = query
+                    .checked_add(length)
+                    .ok_or(BamHeaderError::InvalidRecordSize)?;
+                let text = std::str::from_utf8(
+                    bases
+                        .get(query..end_query)
+                        .ok_or(BamHeaderError::InvalidRecordSize)?,
+                )
+                .map_err(|_| BamHeaderError::InvalidRecordSize)?;
+                let end = reference
+                    .checked_add(length as u32)
+                    .ok_or(BamHeaderError::InvalidRecordSize)?;
+                blocks.push(AlignedBlock {
+                    start: reference,
+                    end,
+                    bases: text.into(),
+                });
+                reference = end;
+                query = end_query;
+            }
+            1 => {
+                let end_query = query
+                    .checked_add(length)
+                    .ok_or(BamHeaderError::InvalidRecordSize)?;
+                let text = std::str::from_utf8(
+                    bases
+                        .get(query..end_query)
+                        .ok_or(BamHeaderError::InvalidRecordSize)?,
+                )
+                .map_err(|_| BamHeaderError::InvalidRecordSize)?;
+                insertions.push(Insertion {
+                    position: reference,
+                    bases: text.into(),
+                });
+                query = end_query;
+            }
+            2 | 3 => {
+                let end = reference
+                    .checked_add(length as u32)
+                    .ok_or(BamHeaderError::InvalidRecordSize)?;
+                deletions.push(ReferenceSpan {
+                    start: reference,
+                    end,
+                });
+                reference = end;
+            }
+            4 => {
+                query = query
+                    .checked_add(length)
+                    .ok_or(BamHeaderError::InvalidRecordSize)?;
+                if query > bases.len() {
+                    return Err(BamHeaderError::InvalidRecordSize);
+                }
+            }
+            5 | 6 => {}
+            _ => return Err(BamHeaderError::InvalidCigar),
+        }
+    }
+    Ok((blocks, deletions, insertions))
 }
 
 fn decode_cigar_operations(operations: &[u32]) -> Result<(u32, String), BamHeaderError> {
@@ -358,7 +586,8 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        long_cigar_operations, parse_bam_header, query_bam_reference, BamHeaderError,
+        fasta_reference_slice, long_cigar_operations, parse_bam_header, parse_fai_references,
+        parse_fasta_references, query_bam_reference, query_bam_region, BamHeaderError,
         MAX_ALIGNMENT_SUMMARIES,
     };
 
@@ -474,6 +703,16 @@ mod tests {
                     mapping_quality: 60,
                     is_reverse: false,
                     cigar: "5M2I3D".into(),
+                    blocks: vec![bamviz_core::AlignedBlock {
+                        start: 10,
+                        end: 15,
+                        bases: "NNNNN".into()
+                    }],
+                    deletions: vec![bamviz_core::ReferenceSpan { start: 15, end: 18 }],
+                    insertions: vec![bamviz_core::Insertion {
+                        position: 15,
+                        bases: "NN".into()
+                    }],
                 }],
                 truncated: false,
             }
@@ -488,6 +727,13 @@ mod tests {
                     mapping_quality: 12,
                     is_reverse: true,
                     cigar: "8=".into(),
+                    blocks: vec![bamviz_core::AlignedBlock {
+                        start: 4,
+                        end: 12,
+                        bases: "NNNNNNNN".into()
+                    }],
+                    deletions: vec![],
+                    insertions: vec![],
                 }],
                 truncated: false,
             }
@@ -507,6 +753,24 @@ mod tests {
     }
 
     #[test]
+    fn returns_only_alignments_overlapping_a_half_open_region() {
+        let bam = compressed_bam(
+            &[("chr1", 1_000)],
+            &[
+                record(0, 10, 0, 60, &[(5, 0)]),
+                record(0, 100, 0, 60, &[(5, 0)]),
+            ],
+        );
+        let result = query_bam_region(&bam, 0, 15, 101).expect("valid BAM");
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.alignments[0].start, 100);
+        assert!(query_bam_region(&bam, 0, 15, 100)
+            .expect("valid BAM")
+            .alignments
+            .is_empty());
+    }
+
+    #[test]
     fn uses_the_cg_auxiliary_tag_for_a_long_cigar() {
         let mut auxiliary = b"CGBI".to_vec();
         auxiliary.extend_from_slice(&2_i32.to_le_bytes());
@@ -515,6 +779,30 @@ mod tests {
         assert_eq!(
             long_cigar_operations(&auxiliary).expect("valid CG tag"),
             Some(vec![80, 33])
+        );
+    }
+
+    #[test]
+    fn reads_fasta_records_and_a_half_open_slice() {
+        let fasta = b">chr1 description\nACGT\nNN\n>plasmid\nTA\n";
+        assert_eq!(
+            parse_fasta_references(fasta).expect("valid FASTA"),
+            vec![
+                bamviz_core::ReferenceSequence::new("chr1", 6),
+                bamviz_core::ReferenceSequence::new("plasmid", 2),
+            ]
+        );
+        assert_eq!(
+            fasta_reference_slice(fasta, "chr1", 1, 5).expect("slice"),
+            "CGTN"
+        );
+    }
+
+    #[test]
+    fn reads_fai_metadata_without_claiming_sequence() {
+        assert_eq!(
+            parse_fai_references(b"chr1\t6\t6\t4\t5\n").expect("valid FAI"),
+            vec![bamviz_core::ReferenceSequence::new("chr1", 6)]
         );
     }
 }

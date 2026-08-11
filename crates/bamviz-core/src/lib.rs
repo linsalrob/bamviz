@@ -30,6 +30,31 @@ pub struct AlignmentSummary {
     pub mapping_quality: u8,
     pub is_reverse: bool,
     pub cigar: String,
+    pub blocks: Vec<AlignedBlock>,
+    pub deletions: Vec<ReferenceSpan>,
+    pub insertions: Vec<Insertion>,
+}
+
+/// A contiguous read sequence mapped to reference coordinates.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlignedBlock {
+    pub start: u32,
+    pub end: u32,
+    pub bases: String,
+}
+
+/// A reference-consuming CIGAR gap such as D or N.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReferenceSpan {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// A query-only CIGAR insertion, anchored immediately before `position`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Insertion {
+    pub position: u32,
+    pub bases: String,
 }
 
 /// A bounded set of alignments suitable for a browser UI, plus the exact match count.

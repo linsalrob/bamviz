@@ -17,6 +17,13 @@ compact summaries of mapped alignments for the selected contig. This is a
 sequential, unindexed fallback intended for modest files; BAI-backed,
 viewport-bounded queries and Canvas read rendering begin in M2.
 
+M2–M4 are implemented as an initial interactive viewer: selected-contig
+alignments render on Canvas with whole-contig reset, cursor-centred zoom and
+drag panning. Rust projects CIGAR effects into reference-aligned base blocks,
+deletions, and insertions for base-scale rendering. Optional FASTA loading
+adds visible reference bases; optional FAI loading is recognised as index
+metadata only and never treated as sequence data.
+
 ## Project goals
 
 The core user workflow should be:
