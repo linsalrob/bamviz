@@ -6,6 +6,17 @@ The goal is a fast, simple genome alignment viewer that runs entirely in the bro
 
 bamviz is intended to share the visual language and interaction model of [`genbank_viewer`](https://github.com/linsalrob/genbank_viewer), including its general layout, colour scheme, cursor-centred zooming, panning behaviour, and local-first architecture.
 
+## Current status
+
+M0 is implemented: the repository contains a Rust workspace, a thin WASM adapter,
+a Svelte/Vite application, automated checks, and GitHub Pages deployment workflow.
+
+M1 is implemented. The browser accepts a local BAM file, reads its
+BGZF-compressed header through Rust/WASM, lists its references, and reports
+compact summaries of mapped alignments for the selected contig. This is a
+sequential, unindexed fallback intended for modest files; BAI-backed,
+viewport-bounded queries and Canvas read rendering begin in M2.
+
 ## Project goals
 
 The core user workflow should be:
