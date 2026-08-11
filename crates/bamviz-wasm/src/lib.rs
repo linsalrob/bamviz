@@ -12,8 +12,8 @@ pub fn parse_bam_header_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub fn query_bam_reference_json(bytes: &[u8], reference_index: usize) -> Result<JsValue, JsValue> {
-    let alignments = bamviz_formats::query_bam_reference(bytes, reference_index)
+    let query = bamviz_formats::query_bam_reference(bytes, reference_index)
         .map_err(|error| JsValue::from_str(&format!("Could not read BAM alignments: {error}")))?;
-    serde_wasm_bindgen::to_value(&alignments)
+    serde_wasm_bindgen::to_value(&query)
         .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
 }

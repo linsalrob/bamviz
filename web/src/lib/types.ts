@@ -11,6 +11,12 @@ export interface AlignmentSummary {
   cigar: string
 }
 
+export interface AlignmentQueryResult {
+  total_count: number
+  alignments: AlignmentSummary[]
+  truncated: boolean
+}
+
 export interface BrowserError {
   message: string
 }

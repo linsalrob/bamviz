@@ -11,37 +11,55 @@
   let fileInput: HTMLInputElement
   let bamBytes: Uint8Array | null = null
   let alignments: AlignmentSummary[] = []
+  let alignmentCount = 0
+  let alignmentsTruncated = false
   let alignmentState: 'idle' | 'loading' | 'ready' = 'idle'
+  let loadGeneration = 0
+  let queryGeneration = 0
 
   async function loadBam(file: File) {
+    const generation = ++loadGeneration
     references = []
     alignments = []
+    alignmentCount = 0
+    alignmentsTruncated = false
     selectedReference = ''
     filename = file.name
     fileSize = file.size
     error = null
     state = 'parsing'
     try {
-      bamBytes = new Uint8Array(await file.arrayBuffer())
-      references = await parseBamHeader(bamBytes)
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      if (generation !== loadGeneration) return
+      const parsedReferences = await parseBamHeader(bytes)
+      if (generation !== loadGeneration) return
+      bamBytes = bytes
+      references = parsedReferences
       selectedReference = references[0]?.name ?? ''
       state = 'ready'
-      await loadSelectedReference()
+      await loadSelectedReference(generation)
     } catch (caught) {
+      if (generation !== loadGeneration) return
       error = { message: caught instanceof Error ? caught.message : String(caught) }
       state = 'error'
     }
   }
 
-  async function loadSelectedReference() {
+  async function loadSelectedReference(expectedLoadGeneration = loadGeneration) {
     const referenceIndex = references.findIndex((reference) => reference.name === selectedReference)
     if (!bamBytes || referenceIndex < 0) return
+    const generation = ++queryGeneration
     alignmentState = 'loading'
     error = null
     try {
-      alignments = await queryBamReference(bamBytes, referenceIndex)
+      const result = await queryBamReference(bamBytes, referenceIndex)
+      if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
+      alignments = result.alignments
+      alignmentCount = result.total_count
+      alignmentsTruncated = result.truncated
       alignmentState = 'ready'
     } catch (caught) {
+      if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       alignments = []
       error = { message: caught instanceof Error ? caught.message : String(caught) }
       state = 'error'
@@ -93,7 +111,7 @@
           <p>Selected <strong>{selectedReference}</strong>.</p>
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
           {#if alignmentState === 'ready'}
-            <p><strong>{alignments.length.toLocaleString()}</strong> mapped alignment{alignments.length === 1 ? '' : 's'} found.</p>
+            <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
                 <div class="alignment-heading"><span>Position (1-based)</span><span>CIGAR</span><span>MAPQ</span><span>Strand</span></div>
@@ -101,7 +119,7 @@
                   <div class="alignment"><span>{(alignment.start + 1).toLocaleString()}–{alignment.end.toLocaleString()}</span><code>{alignment.cigar || '*'}</code><span>{alignment.mapping_quality}</span><span>{alignment.is_reverse ? '−' : '+'}</span></div>
                 {/each}
               </div>
-              {#if alignments.length > 100}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
+              {#if alignmentsTruncated}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
             {/if}
           {/if}
         {/if}

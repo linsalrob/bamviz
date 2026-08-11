@@ -32,6 +32,14 @@ pub struct AlignmentSummary {
     pub cigar: String,
 }
 
+/// A bounded set of alignments suitable for a browser UI, plus the exact match count.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlignmentQueryResult {
+    pub total_count: u64,
+    pub alignments: Vec<AlignmentSummary>,
+    pub truncated: bool,
+}
+
 /// A 0-based, half-open genomic interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GenomicInterval {

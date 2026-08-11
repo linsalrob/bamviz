@@ -2,11 +2,13 @@
 
 use std::io::Read;
 
-use bamviz_core::{AlignmentSummary, ReferenceSequence};
+use bamviz_core::{AlignmentQueryResult, AlignmentSummary, ReferenceSequence};
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
 
 const BAM_MAGIC: &[u8; 4] = b"BAM\x01";
+/// Kept in sync with the number of rows rendered by the M1 browser view.
+pub const MAX_ALIGNMENT_SUMMARIES: usize = 100;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum BamHeaderError {
@@ -26,6 +28,8 @@ pub enum BamHeaderError {
     InvalidRecordSize,
     #[error("the BAM record has an invalid CIGAR operation")]
     InvalidCigar,
+    #[error("the BAM record has malformed auxiliary data")]
+    InvalidAuxiliaryData,
 }
 
 /// Reads reference names and lengths from a BGZF-compressed BAM header.
@@ -45,26 +49,41 @@ pub fn parse_bam_header(input: &[u8]) -> Result<Vec<ReferenceSequence>, BamHeade
 pub fn query_bam_reference(
     input: &[u8],
     reference_index: usize,
-) -> Result<Vec<AlignmentSummary>, BamHeaderError> {
+) -> Result<AlignmentQueryResult, BamHeaderError> {
     let mut decoded = MultiGzDecoder::new(input);
     let references = read_bam_header(&mut decoded)?;
     if reference_index >= references.len() {
-        return Ok(Vec::new());
+        return Ok(AlignmentQueryResult {
+            total_count: 0,
+            alignments: Vec::new(),
+            truncated: false,
+        });
     }
 
     let mut alignments = Vec::new();
+    let mut total_count = 0_u64;
     while let Some(record) = read_bam_record(&mut decoded)? {
-        if record.reference_index == reference_index as i32 && record.start >= 0 {
-            alignments.push(AlignmentSummary {
-                start: record.start as u32,
-                end: record.end,
-                mapping_quality: record.mapping_quality,
-                is_reverse: record.flags & 0x10 != 0,
-                cigar: record.cigar,
-            });
+        if record.reference_index == reference_index as i32
+            && record.start >= 0
+            && record.flags & 0x4 == 0
+        {
+            total_count += 1;
+            if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
+                alignments.push(AlignmentSummary {
+                    start: record.start as u32,
+                    end: record.end,
+                    mapping_quality: record.mapping_quality,
+                    is_reverse: record.flags & 0x10 != 0,
+                    cigar: record.cigar,
+                });
+            }
         }
     }
-    Ok(alignments)
+    Ok(AlignmentQueryResult {
+        total_count,
+        truncated: total_count > alignments.len() as u64,
+        alignments,
+    })
 }
 
 fn read_bam_header(reader: &mut impl Read) -> Result<Vec<ReferenceSequence>, BamHeaderError> {
@@ -158,10 +177,36 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
         return Err(BamHeaderError::InvalidRecordSize);
     }
 
+    let core_cigar = block[cigar_start..cigar_end]
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("fixed CIGAR operation")))
+        .collect::<Vec<_>>();
+    let auxiliary_start = minimum_size;
+    let cigar_operations = long_cigar_operations(&block[auxiliary_start..])?.unwrap_or(core_cigar);
+    let (reference_span, cigar) = decode_cigar_operations(&cigar_operations)?;
+    let end = if start < 0 {
+        0
+    } else {
+        u32::try_from(start)
+            .ok()
+            .and_then(|start| start.checked_add(reference_span))
+            .ok_or(BamHeaderError::InvalidRecordSize)?
+    };
+    Ok(Some(DecodedRecord {
+        reference_index,
+        start,
+        end,
+        mapping_quality,
+        flags,
+        cigar,
+    }))
+}
+
+fn decode_cigar_operations(operations: &[u32]) -> Result<(u32, String), BamHeaderError> {
     let mut reference_span = 0_u32;
     let mut cigar = String::new();
-    for bytes in block[cigar_start..cigar_end].chunks_exact(4) {
-        let encoded = u32::from_le_bytes(bytes.try_into().expect("fixed CIGAR operation"));
+    for encoded in operations {
+        let encoded = *encoded;
         let length = encoded >> 4;
         let operation = match encoded & 0x0f {
             0 => 'M',
@@ -183,22 +228,85 @@ fn read_bam_record(reader: &mut impl Read) -> Result<Option<DecodedRecord>, BamH
         use std::fmt::Write;
         write!(cigar, "{length}{operation}").expect("writing to string cannot fail");
     }
-    let end = if start < 0 {
-        0
-    } else {
-        u32::try_from(start)
-            .ok()
-            .and_then(|start| start.checked_add(reference_span))
-            .ok_or(BamHeaderError::InvalidRecordSize)?
-    };
-    Ok(Some(DecodedRecord {
-        reference_index,
-        start,
-        end,
-        mapping_quality,
-        flags,
-        cigar,
-    }))
+    Ok((reference_span, cigar))
+}
+
+fn long_cigar_operations(auxiliary: &[u8]) -> Result<Option<Vec<u32>>, BamHeaderError> {
+    let mut cursor = 0;
+    while cursor < auxiliary.len() {
+        let tag = take_auxiliary(auxiliary, &mut cursor, 2)?;
+        let kind = *take_auxiliary(auxiliary, &mut cursor, 1)?
+            .first()
+            .expect("one-byte slice");
+        match kind {
+            b'A' | b'c' | b'C' => skip_auxiliary(auxiliary, &mut cursor, 1)?,
+            b's' | b'S' => skip_auxiliary(auxiliary, &mut cursor, 2)?,
+            b'i' | b'I' | b'f' => skip_auxiliary(auxiliary, &mut cursor, 4)?,
+            b'Z' | b'H' => {
+                let remaining = &auxiliary[cursor..];
+                let Some(terminator) = remaining.iter().position(|byte| *byte == 0) else {
+                    return Err(BamHeaderError::InvalidAuxiliaryData);
+                };
+                cursor += terminator + 1;
+            }
+            b'B' => {
+                let subtype = *take_auxiliary(auxiliary, &mut cursor, 1)?
+                    .first()
+                    .expect("one-byte slice");
+                let count = read_auxiliary_i32(auxiliary, &mut cursor)?;
+                let count =
+                    usize::try_from(count).map_err(|_| BamHeaderError::InvalidAuxiliaryData)?;
+                let element_size = match subtype {
+                    b'c' | b'C' => 1,
+                    b's' | b'S' => 2,
+                    b'i' | b'I' | b'f' => 4,
+                    _ => return Err(BamHeaderError::InvalidAuxiliaryData),
+                };
+                let byte_count = count
+                    .checked_mul(element_size)
+                    .ok_or(BamHeaderError::InvalidAuxiliaryData)?;
+                let values = take_auxiliary(auxiliary, &mut cursor, byte_count)?;
+                if tag == b"CG" && subtype == b'I' {
+                    return Ok(Some(
+                        values
+                            .chunks_exact(4)
+                            .map(|bytes| {
+                                u32::from_le_bytes(bytes.try_into().expect("fixed CG operation"))
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+            _ => return Err(BamHeaderError::InvalidAuxiliaryData),
+        }
+    }
+    Ok(None)
+}
+
+fn take_auxiliary<'a>(
+    input: &'a [u8],
+    cursor: &mut usize,
+    length: usize,
+) -> Result<&'a [u8], BamHeaderError> {
+    let end = cursor
+        .checked_add(length)
+        .ok_or(BamHeaderError::InvalidAuxiliaryData)?;
+    let value = input
+        .get(*cursor..end)
+        .ok_or(BamHeaderError::InvalidAuxiliaryData)?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn skip_auxiliary(input: &[u8], cursor: &mut usize, length: usize) -> Result<(), BamHeaderError> {
+    take_auxiliary(input, cursor, length).map(|_| ())
+}
+
+fn read_auxiliary_i32(input: &[u8], cursor: &mut usize) -> Result<i32, BamHeaderError> {
+    let bytes: [u8; 4] = take_auxiliary(input, cursor, 4)?
+        .try_into()
+        .expect("fixed auxiliary integer");
+    Ok(i32::from_le_bytes(bytes))
 }
 
 fn read_exact(reader: &mut impl Read, buffer: &mut [u8]) -> Result<(), BamHeaderError> {
@@ -249,7 +357,10 @@ mod tests {
 
     use flate2::{write::GzEncoder, Compression};
 
-    use super::{parse_bam_header, query_bam_reference, BamHeaderError};
+    use super::{
+        long_cigar_operations, parse_bam_header, query_bam_reference, BamHeaderError,
+        MAX_ALIGNMENT_SUMMARIES,
+    };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
         let mut raw = b"BAM\x01".to_vec();
@@ -350,28 +461,60 @@ mod tests {
             &[
                 record(0, 10, 0, 60, &[(5, 0), (2, 1), (3, 2)]),
                 record(1, 4, 0x10, 12, &[(8, 7)]),
-                record(-1, -1, 0x4, 0, &[]),
+                record(0, 20, 0x4, 0, &[]),
             ],
         );
         assert_eq!(
             query_bam_reference(&bam, 0).expect("valid BAM"),
-            vec![bamviz_core::AlignmentSummary {
-                start: 10,
-                end: 18,
-                mapping_quality: 60,
-                is_reverse: false,
-                cigar: "5M2I3D".into(),
-            }]
+            bamviz_core::AlignmentQueryResult {
+                total_count: 1,
+                alignments: vec![bamviz_core::AlignmentSummary {
+                    start: 10,
+                    end: 18,
+                    mapping_quality: 60,
+                    is_reverse: false,
+                    cigar: "5M2I3D".into(),
+                }],
+                truncated: false,
+            }
         );
         assert_eq!(
             query_bam_reference(&bam, 1).expect("valid BAM"),
-            vec![bamviz_core::AlignmentSummary {
-                start: 4,
-                end: 12,
-                mapping_quality: 12,
-                is_reverse: true,
-                cigar: "8=".into(),
-            }]
+            bamviz_core::AlignmentQueryResult {
+                total_count: 1,
+                alignments: vec![bamviz_core::AlignmentSummary {
+                    start: 4,
+                    end: 12,
+                    mapping_quality: 12,
+                    is_reverse: true,
+                    cigar: "8=".into(),
+                }],
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn bounds_summaries_but_retains_the_exact_alignment_count() {
+        let records = (0..=MAX_ALIGNMENT_SUMMARIES)
+            .map(|start| record(0, start as i32, 0, 60, &[(1, 0)]))
+            .collect::<Vec<_>>();
+        let bam = compressed_bam(&[("chr1", 1_000)], &records);
+        let result = query_bam_reference(&bam, 0).expect("valid BAM");
+        assert_eq!(result.total_count, (MAX_ALIGNMENT_SUMMARIES + 1) as u64);
+        assert_eq!(result.alignments.len(), MAX_ALIGNMENT_SUMMARIES);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn uses_the_cg_auxiliary_tag_for_a_long_cigar() {
+        let mut auxiliary = b"CGBI".to_vec();
+        auxiliary.extend_from_slice(&2_i32.to_le_bytes());
+        auxiliary.extend_from_slice(&((5_u32 << 4) | 0).to_le_bytes());
+        auxiliary.extend_from_slice(&((2_u32 << 4) | 1).to_le_bytes());
+        assert_eq!(
+            long_cigar_operations(&auxiliary).expect("valid CG tag"),
+            Some(vec![80, 33])
         );
     }
 }
