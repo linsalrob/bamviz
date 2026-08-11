@@ -24,6 +24,16 @@ deletions, and insertions for base-scale rendering. Optional FASTA loading
 adds visible reference bases; optional FAI loading is recognised as index
 metadata only and never treated as sequence data.
 
+M5 alignment inspection is implemented: the viewer exposes read names, SAM
+flags, strand, clipping, mate coordinates, and mapping quality. Users can
+filter the visible-region query by mapping quality and secondary,
+supplementary, or duplicate status, then select a read for its details.
+
+BAI files can now be dropped onto the loader or selected with **Add BAI**. The
+browser parses their local binning and linear-index summaries, checks their
+reference count against the BAM, and uses matching BAI chunks for indexed BGZF
+region reads. BAM-only sessions retain the safe sequential fallback.
+
 ## Project goals
 
 The core user workflow should be:

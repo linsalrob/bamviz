@@ -31,6 +31,51 @@ pub fn query_bam_region_json(
         .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
 }
 
+#[wasm_bindgen]
+pub fn query_bam_region_filtered_json(
+    bytes: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+    filter: JsValue,
+) -> Result<JsValue, JsValue> {
+    let filter: bamviz_core::AlignmentFilter = serde_wasm_bindgen::from_value(filter)
+        .map_err(|error| JsValue::from_str(&format!("Invalid alignment filter: {error}")))?;
+    let query =
+        bamviz_formats::query_bam_region_with_filter(bytes, reference_index, start, end, filter)
+            .map_err(|error| {
+                JsValue::from_str(&format!("Could not read BAM alignments: {error}"))
+            })?;
+    serde_wasm_bindgen::to_value(&query)
+        .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
+}
+
+#[wasm_bindgen]
+pub fn query_bam_region_indexed_filtered_json(
+    bytes: &[u8],
+    bai: &[u8],
+    reference_index: usize,
+    start: u32,
+    end: u32,
+    filter: JsValue,
+) -> Result<JsValue, JsValue> {
+    let filter: bamviz_core::AlignmentFilter = serde_wasm_bindgen::from_value(filter)
+        .map_err(|error| JsValue::from_str(&format!("Invalid alignment filter: {error}")))?;
+    let query = bamviz_formats::query_bam_region_indexed_with_filter(
+        bytes,
+        bai,
+        reference_index,
+        start,
+        end,
+        filter,
+    )
+    .map_err(|error| {
+        JsValue::from_str(&format!("Could not read indexed BAM alignments: {error}"))
+    })?;
+    serde_wasm_bindgen::to_value(&query)
+        .map_err(|error| JsValue::from_str(&format!("Could not serialise BAM alignments: {error}")))
+}
+
 /// Parsed local FASTA retained in WASM so viewport updates do not reparse the file.
 #[wasm_bindgen]
 pub struct FastaFile {
@@ -79,4 +124,11 @@ pub fn parse_fai_references_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let references = bamviz_formats::parse_fai_references(bytes)
         .map_err(|error| JsValue::from_str(&format!("Could not read FAI: {error}")))?;
     serde_wasm_bindgen::to_value(&references).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn parse_bai_index_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let index = bamviz_formats::parse_bai_index(bytes)
+        .map_err(|error| JsValue::from_str(&format!("Could not read BAI: {error}")))?;
+    serde_wasm_bindgen::to_value(&index).map_err(|error| JsValue::from_str(&error.to_string()))
 }

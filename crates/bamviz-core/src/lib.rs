@@ -25,14 +25,76 @@ impl ReferenceSequence {
 /// `start` and `end` use 0-based, half-open reference coordinates.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AlignmentSummary {
+    pub read_name: String,
     pub start: u32,
     pub end: u32,
     pub mapping_quality: u8,
-    pub is_reverse: bool,
+    pub flags: AlignmentFlags,
     pub cigar: String,
+    pub left_clip: u32,
+    pub right_clip: u32,
+    pub mate_reference: Option<String>,
+    pub mate_start: Option<u32>,
     pub blocks: Vec<AlignedBlock>,
     pub deletions: Vec<ReferenceSpan>,
     pub insertions: Vec<Insertion>,
+}
+
+/// User-facing interpretation of SAM flag bits for a single alignment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlignmentFlags {
+    pub raw: u16,
+    pub is_reverse: bool,
+    pub is_paired: bool,
+    pub is_proper_pair: bool,
+    pub mate_is_reverse: bool,
+    pub is_secondary: bool,
+    pub is_supplementary: bool,
+    pub is_duplicate: bool,
+}
+
+impl AlignmentFlags {
+    pub fn from_sam_flags(raw: u16) -> Self {
+        Self {
+            raw,
+            is_reverse: raw & 0x10 != 0,
+            is_paired: raw & 0x1 != 0,
+            is_proper_pair: raw & 0x2 != 0,
+            mate_is_reverse: raw & 0x20 != 0,
+            is_secondary: raw & 0x100 != 0,
+            is_supplementary: raw & 0x800 != 0,
+            is_duplicate: raw & 0x400 != 0,
+        }
+    }
+}
+
+/// Rust-owned alignment filter semantics applied before browser DTOs are built.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AlignmentFilter {
+    pub min_mapping_quality: u8,
+    pub include_secondary: bool,
+    pub include_supplementary: bool,
+    pub include_duplicates: bool,
+}
+
+impl Default for AlignmentFilter {
+    fn default() -> Self {
+        Self {
+            min_mapping_quality: 0,
+            include_secondary: true,
+            include_supplementary: true,
+            include_duplicates: true,
+        }
+    }
+}
+
+impl AlignmentFilter {
+    pub fn matches(self, mapping_quality: u8, flags: &AlignmentFlags) -> bool {
+        mapping_quality >= self.min_mapping_quality
+            && (self.include_secondary || !flags.is_secondary)
+            && (self.include_supplementary || !flags.is_supplementary)
+            && (self.include_duplicates || !flags.is_duplicate)
+    }
 }
 
 /// A contiguous read sequence mapped to reference coordinates.
@@ -88,7 +150,7 @@ impl GenomicInterval {
 
 #[cfg(test)]
 mod tests {
-    use super::GenomicInterval;
+    use super::{AlignmentFilter, AlignmentFlags, GenomicInterval};
 
     #[test]
     fn interval_uses_half_open_coordinates() {
@@ -96,5 +158,20 @@ mod tests {
         assert_eq!(interval.len(), 1);
         assert!(!interval.is_empty());
         assert_eq!(GenomicInterval::new(5, 4), None);
+    }
+
+    #[test]
+    fn filter_interprets_sam_flags_in_rust() {
+        let flags = AlignmentFlags::from_sam_flags(0x10 | 0x100 | 0x400);
+        assert!(flags.is_reverse);
+        assert!(flags.is_secondary);
+        assert!(flags.is_duplicate);
+        assert!(!AlignmentFilter {
+            min_mapping_quality: 20,
+            include_secondary: false,
+            include_supplementary: true,
+            include_duplicates: false,
+        }
+        .matches(60, &flags));
     }
 }
