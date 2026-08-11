@@ -50,3 +50,16 @@ export interface AlignmentQueryResult {
 export interface BrowserError {
   message: string
 }
+
+export interface BaiReferenceSummary {
+  bin_count: number
+  chunk_count: number
+  linear_interval_count: number
+  mapped_count: number | null
+  unmapped_count: number | null
+}
+
+export interface BaiIndexSummary {
+  references: BaiReferenceSummary[]
+  unplaced_unmapped_count: number | null
+}

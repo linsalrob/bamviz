@@ -99,3 +99,10 @@ pub fn parse_fai_references_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&format!("Could not read FAI: {error}")))?;
     serde_wasm_bindgen::to_value(&references).map_err(|error| JsValue::from_str(&error.to_string()))
 }
+
+#[wasm_bindgen]
+pub fn parse_bai_index_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let index = bamviz_formats::parse_bai_index(bytes)
+        .map_err(|error| JsValue::from_str(&format!("Could not read BAI: {error}")))?;
+    serde_wasm_bindgen::to_value(&index).map_err(|error| JsValue::from_str(&error.to_string()))
+}

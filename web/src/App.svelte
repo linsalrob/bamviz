@@ -1,8 +1,8 @@
 <script lang="ts">
   import { afterUpdate, onMount } from 'svelte'
-  import type { AlignmentFilter, AlignmentSummary, BrowserError, ReferenceSequence } from './lib/types'
+  import type { AlignmentFilter, AlignmentSummary, BaiIndexSummary, BrowserError, ReferenceSequence } from './lib/types'
   import type { CachedFasta } from './lib/wasm'
-  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBamHeader, parseFaiReferences, queryBamRegionFiltered } from './lib/wasm'
+  import { fastaReferenceSlice, fastaReferences, loadFasta as loadCachedFasta, parseBaiIndex, parseBamHeader, parseFaiReferences, queryBamRegionFiltered } from './lib/wasm'
 
   let references: ReferenceSequence[] = []
   let selectedReference = ''
@@ -11,7 +11,10 @@
   let state: 'idle' | 'parsing' | 'ready' | 'error' = 'idle'
   let error: BrowserError | null = null
   let fileInput: HTMLInputElement
+  let baiInput: HTMLInputElement
   let bamBytes: Uint8Array | null = null
+  let baiIndex: BaiIndexSummary | null = null
+  let baiStatus = ''
   let alignments: AlignmentSummary[] = []
   let alignmentCount = 0
   let alignmentsTruncated = false
@@ -57,12 +60,29 @@
       selectedReference = initialReference?.name ?? ''
       resetView(initialReference)
       state = 'ready'
+      updateBaiStatus()
       await loadSelectedReference(generation)
     } catch (caught) {
       if (generation !== loadGeneration) return
       error = { message: caught instanceof Error ? caught.message : String(caught) }
       state = 'error'
     }
+  }
+
+  function updateBaiStatus() {
+    if (!baiIndex) return
+    if (!references.length) { baiStatus = `BAI loaded for ${baiIndex.references.length} reference${baiIndex.references.length === 1 ? '' : 's'}; load its BAM to validate it`; return }
+    baiStatus = baiIndex.references.length === references.length
+      ? `BAI loaded: ${baiIndex.references.length} reference index${baiIndex.references.length === 1 ? '' : 'es'} available for this BAM`
+      : `The selected BAI has ${baiIndex.references.length} references but this BAM has ${references.length}; it may not match this BAM`
+  }
+
+  async function loadBai(file: File) {
+    baiStatus = `Reading ${file.name}…`
+    try {
+      baiIndex = await parseBaiIndex(new Uint8Array(await file.arrayBuffer()))
+      updateBaiStatus()
+    } catch (caught) { baiStatus = caught instanceof Error ? caught.message : String(caught) }
   }
 
   function resetView(reference = selectedReferenceData) {
@@ -250,9 +270,19 @@
     if (file) void loadBam(file)
   }
 
+  function loadDroppedFiles(files: FileList | null) {
+    for (const file of Array.from(files ?? [])) {
+      const name = file.name.toLowerCase()
+      if (name.endsWith('.bam')) void loadBam(file)
+      else if (name.endsWith('.bai')) void loadBai(file)
+      else if (name.endsWith('.fai')) void loadFai(file)
+      else if (name.endsWith('.fa') || name.endsWith('.fasta') || name.endsWith('.fna')) void loadFasta(file)
+    }
+  }
+
   function drop(event: DragEvent) {
     event.preventDefault()
-    handleFiles(event.dataTransfer?.files ?? null)
+    loadDroppedFiles(event.dataTransfer?.files ?? null)
   }
 </script>
 
@@ -266,10 +296,12 @@
 <main>
   <section class="file-loader" aria-label="BAM file loader" ondragover={(event) => event.preventDefault()} ondrop={drop}>
     <h2>Open a BAM file</h2>
-    <p>Drop a coordinate-sorted <code>.bam</code> file here, or choose one from your computer.</p>
+    <p>Drop local <code>.bam</code>, <code>.bai</code>, <code>.fasta</code>, or <code>.fai</code> files here, or choose them individually.</p>
     <input bind:this={fileInput} type="file" accept=".bam,application/octet-stream" onchange={(event) => handleFiles(event.currentTarget.files)} />
     <button onclick={() => fileInput.click()}>Choose BAM</button>
-    <small>BAM headers and selected-contig alignments are decoded locally. BAI-backed viewport queries are planned for later performance work.</small>
+    <input bind:this={baiInput} type="file" accept=".bai,application/octet-stream" onchange={(event) => event.currentTarget.files?.[0] && void loadBai(event.currentTarget.files[0])} />
+    <button onclick={() => baiInput.click()}>Add BAI</button>
+    <small>BAM headers and selected-contig alignments are decoded locally. BAI parsing validates local index metadata; indexed record seeking is the next performance step.</small>{#if baiStatus}<small role="status">{baiStatus}</small>{/if}
   </section>
   <section class="reference-loader" aria-label="Optional reference files"><h2>Optional reference context</h2><p>Load a FASTA to display reference bases. An FAI is an index only and does not provide sequence.</p><input bind:this={fastaInput} type="file" accept=".fa,.fasta,.fna,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFasta(event.currentTarget.files[0])} /><button onclick={() => fastaInput.click()}>Choose FASTA</button><input bind:this={faiInput} type="file" accept=".fai,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFai(event.currentTarget.files[0])} /><button onclick={() => faiInput.click()}>Choose FAI</button>{#if fastaStatus}<small role="status">{fastaStatus}</small>{/if}</section>
 

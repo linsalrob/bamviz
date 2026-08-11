@@ -1,5 +1,5 @@
-import type { AlignmentFilter, AlignmentQueryResult, ReferenceSequence } from './types'
-import init, { FastaFile, parse_fai_references_json, parse_bam_header_json, query_bam_reference_json, query_bam_region_filtered_json, query_bam_region_json } from '@bamviz-wasm'
+import type { AlignmentFilter, AlignmentQueryResult, BaiIndexSummary, ReferenceSequence } from './types'
+import init, { FastaFile, parse_bai_index_json, parse_fai_references_json, parse_bam_header_json, query_bam_reference_json, query_bam_region_filtered_json, query_bam_region_json } from '@bamviz-wasm'
 
 export type CachedFasta = FastaFile
 
@@ -31,3 +31,4 @@ export async function loadFasta(bytes: Uint8Array): Promise<CachedFasta> { await
 export function fastaReferences(fasta: CachedFasta): ReferenceSequence[] { return fasta.references_json() as ReferenceSequence[] }
 export function fastaReferenceSlice(fasta: CachedFasta, name: string, start: number, end: number): string { return fasta.reference_slice_json(name, start, end) as string }
 export async function parseFaiReferences(bytes: Uint8Array): Promise<ReferenceSequence[]> { await initializeWasm(); return parse_fai_references_json(bytes) as ReferenceSequence[] }
+export async function parseBaiIndex(bytes: Uint8Array): Promise<BaiIndexSummary> { await initializeWasm(); return parse_bai_index_json(bytes) as BaiIndexSummary }

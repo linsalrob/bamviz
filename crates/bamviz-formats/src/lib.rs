@@ -10,6 +10,8 @@ use flate2::read::MultiGzDecoder;
 use thiserror::Error;
 
 const BAM_MAGIC: &[u8; 4] = b"BAM\x01";
+const BAI_MAGIC: &[u8; 4] = b"BAI\x01";
+const BAI_METADATA_BIN: u32 = 37_450;
 /// Kept in sync with the number of rows rendered by the M1 browser view.
 pub const MAX_ALIGNMENT_SUMMARIES: usize = 100;
 
@@ -132,6 +134,119 @@ pub enum BamHeaderError {
     InvalidCigar,
     #[error("the BAM record has malformed auxiliary data")]
     InvalidAuxiliaryData,
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum BaiError {
+    #[error("the BAI index is truncated")]
+    Truncated,
+    #[error("the file is not a BAI index (expected BAI\\x01)")]
+    InvalidMagic,
+    #[error("the BAI index has an invalid {field} count")]
+    InvalidCount { field: &'static str },
+    #[error("the BAI metadata bin has an invalid chunk count")]
+    InvalidMetadata,
+}
+
+/// The metadata needed to describe one reference's BAI entries without retaining chunks.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct BaiReferenceSummary {
+    pub bin_count: u32,
+    pub chunk_count: u64,
+    pub linear_interval_count: u32,
+    pub mapped_count: Option<u64>,
+    pub unmapped_count: Option<u64>,
+}
+
+/// A compact, serialisable BAI summary for local browser validation and UI feedback.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct BaiIndexSummary {
+    pub references: Vec<BaiReferenceSummary>,
+    pub unplaced_unmapped_count: Option<u64>,
+}
+
+/// Parses a BAI index without reading the BAM or retaining its virtual-offset chunks.
+pub fn parse_bai_index(input: &[u8]) -> Result<BaiIndexSummary, BaiError> {
+    let mut cursor = 0;
+    if take_bai(input, &mut cursor, 4)? != BAI_MAGIC {
+        return Err(BaiError::InvalidMagic);
+    }
+    let reference_count = read_bai_u32(input, &mut cursor, "reference")? as usize;
+    let mut references = Vec::with_capacity(reference_count);
+    for _ in 0..reference_count {
+        let bin_count = read_bai_u32(input, &mut cursor, "bin")?;
+        let mut chunk_count = 0_u64;
+        let mut mapped_count = None;
+        let mut unmapped_count = None;
+        for _ in 0..bin_count {
+            let bin = read_bai_u32(input, &mut cursor, "bin")?;
+            let count = read_bai_u32(input, &mut cursor, "chunk")?;
+            if bin == BAI_METADATA_BIN {
+                if count != 2 {
+                    return Err(BaiError::InvalidMetadata);
+                }
+                take_bai(input, &mut cursor, 16)?; // ref_beg and ref_end virtual offsets
+                mapped_count = Some(read_bai_u64(input, &mut cursor, "metadata")?);
+                unmapped_count = Some(read_bai_u64(input, &mut cursor, "metadata")?);
+            } else {
+                let byte_count = (count as usize)
+                    .checked_mul(16)
+                    .ok_or(BaiError::InvalidCount { field: "chunk" })?;
+                take_bai(input, &mut cursor, byte_count)?;
+                chunk_count += u64::from(count);
+            }
+        }
+        let linear_interval_count = read_bai_u32(input, &mut cursor, "linear interval")?;
+        let byte_count =
+            (linear_interval_count as usize)
+                .checked_mul(8)
+                .ok_or(BaiError::InvalidCount {
+                    field: "linear interval",
+                })?;
+        take_bai(input, &mut cursor, byte_count)?;
+        references.push(BaiReferenceSummary {
+            bin_count,
+            chunk_count,
+            linear_interval_count,
+            mapped_count,
+            unmapped_count,
+        });
+    }
+    let unplaced_unmapped_count = match input.len().saturating_sub(cursor) {
+        0 => None,
+        8 => Some(read_bai_u64(input, &mut cursor, "unplaced unmapped")?),
+        _ => return Err(BaiError::Truncated),
+    };
+    Ok(BaiIndexSummary {
+        references,
+        unplaced_unmapped_count,
+    })
+}
+
+fn take_bai<'a>(input: &'a [u8], cursor: &mut usize, length: usize) -> Result<&'a [u8], BaiError> {
+    let end = cursor.checked_add(length).ok_or(BaiError::Truncated)?;
+    let bytes = input.get(*cursor..end).ok_or(BaiError::Truncated)?;
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn read_bai_u32(input: &[u8], cursor: &mut usize, field: &'static str) -> Result<u32, BaiError> {
+    let bytes: [u8; 4] = take_bai(input, cursor, 4)?
+        .try_into()
+        .expect("fixed BAI u32");
+    let value = u32::from_le_bytes(bytes);
+    if field == "reference" && value >= (1 << 31) {
+        return Err(BaiError::InvalidCount { field });
+    }
+    Ok(value)
+}
+
+fn read_bai_u64(input: &[u8], cursor: &mut usize, field: &'static str) -> Result<u64, BaiError> {
+    let bytes: [u8; 8] = take_bai(input, cursor, 8)?
+        .try_into()
+        .expect("fixed BAI u64");
+    let _ = field;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 /// Reads reference names and lengths from a BGZF-compressed BAM header.
@@ -653,9 +768,9 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        fasta_reference_slice, long_cigar_operations, parse_bam_header, parse_fai_references,
-        parse_fasta_references, query_bam_reference, query_bam_region, BamHeaderError,
-        MAX_ALIGNMENT_SUMMARIES,
+        fasta_reference_slice, long_cigar_operations, parse_bai_index, parse_bam_header,
+        parse_fai_references, parse_fasta_references, query_bam_reference, query_bam_region,
+        BaiError, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -881,5 +996,40 @@ mod tests {
             parse_fai_references(b"chr1\t6\t6\t4\t5\n").expect("valid FAI"),
             vec![bamviz_core::ReferenceSequence::new("chr1", 6)]
         );
+    }
+
+    #[test]
+    fn reads_bai_reference_and_metadata_summaries() {
+        let mut bai = b"BAI\x01".to_vec();
+        bai.extend_from_slice(&1_u32.to_le_bytes()); // n_ref
+        bai.extend_from_slice(&2_u32.to_le_bytes()); // n_bin
+        bai.extend_from_slice(&4681_u32.to_le_bytes());
+        bai.extend_from_slice(&1_u32.to_le_bytes());
+        bai.extend_from_slice(&10_u64.to_le_bytes());
+        bai.extend_from_slice(&20_u64.to_le_bytes());
+        bai.extend_from_slice(&37_450_u32.to_le_bytes());
+        bai.extend_from_slice(&2_u32.to_le_bytes());
+        bai.extend_from_slice(&10_u64.to_le_bytes());
+        bai.extend_from_slice(&20_u64.to_le_bytes());
+        bai.extend_from_slice(&7_u64.to_le_bytes());
+        bai.extend_from_slice(&3_u64.to_le_bytes());
+        bai.extend_from_slice(&2_u32.to_le_bytes()); // n_intv
+        bai.extend_from_slice(&[0_u8; 16]);
+        bai.extend_from_slice(&5_u64.to_le_bytes()); // n_no_coor
+
+        let index = parse_bai_index(&bai).expect("valid BAI");
+        assert_eq!(index.references.len(), 1);
+        assert_eq!(index.references[0].bin_count, 2);
+        assert_eq!(index.references[0].chunk_count, 1);
+        assert_eq!(index.references[0].linear_interval_count, 2);
+        assert_eq!(index.references[0].mapped_count, Some(7));
+        assert_eq!(index.references[0].unmapped_count, Some(3));
+        assert_eq!(index.unplaced_unmapped_count, Some(5));
+    }
+
+    #[test]
+    fn rejects_invalid_bai_magic_and_truncation() {
+        assert_eq!(parse_bai_index(b"nope"), Err(BaiError::InvalidMagic));
+        assert_eq!(parse_bai_index(b"BAI\x01\x01"), Err(BaiError::Truncated));
     }
 }

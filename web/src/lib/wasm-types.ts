@@ -7,6 +7,7 @@ declare function query_bam_region_json(bytes: Uint8Array, referenceIndex: number
 declare function query_bam_region_filtered_json(bytes: Uint8Array, referenceIndex: number, start: number, end: number, filter: unknown): unknown
 declare function parse_fasta_references_json(bytes: Uint8Array): unknown
 declare function parse_fai_references_json(bytes: Uint8Array): unknown
+declare function parse_bai_index_json(bytes: Uint8Array): unknown
 declare class FastaFile {
   constructor(bytes: Uint8Array)
   references_json(): unknown
@@ -14,5 +15,5 @@ declare class FastaFile {
   free(): void
 }
 
-export { FastaFile, parse_bam_header_json, query_bam_reference_json, query_bam_region_json, query_bam_region_filtered_json, parse_fasta_references_json, parse_fai_references_json }
+export { FastaFile, parse_bam_header_json, query_bam_reference_json, query_bam_region_json, query_bam_region_filtered_json, parse_fasta_references_json, parse_fai_references_json, parse_bai_index_json }
 export default init

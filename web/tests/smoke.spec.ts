@@ -24,6 +24,15 @@ function syntheticBam(): Buffer {
   return gzipSync(Buffer.from(bytes))
 }
 
+function syntheticBai(): Buffer {
+  const bytes: number[] = [...Buffer.from('BAI\x01')]
+  const u32 = (value: number) => bytes.push(...Buffer.from(Uint8Array.of(value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255)))
+  u32(2)
+  u32(0); u32(0)
+  u32(0); u32(0)
+  return Buffer.from(bytes)
+}
+
 test('opens the local BAM loader', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'bamviz' })).toBeVisible()
@@ -34,9 +43,11 @@ test('loads a BAM and changes the selected contig', async ({ page }) => {
   await page.goto('/')
   await page
     .getByRole('region', { name: 'BAM file loader' })
-    .locator('input[type=file]')
+    .locator('input[accept^=".bam"]')
     .setInputFiles({ name: 'synthetic.bam', mimeType: 'application/octet-stream', buffer: syntheticBam() })
   await expect(page.getByText('2 references')).toBeVisible()
+  await page.getByRole('region', { name: 'BAM file loader' }).locator('input[accept^=".bai"]').setInputFiles({ name: 'synthetic.bam.bai', mimeType: 'application/octet-stream', buffer: syntheticBai() })
+  await expect(page.getByText('BAI loaded: 2 reference indexes available for this BAM')).toBeVisible()
   await expect(page.getByText('1 mapped alignment found.')).toBeVisible()
   await page.getByRole('button', { name: /r 11–15/ }).click()
   await expect(page.getByRole('region', { name: 'Selected read details' })).toContainText('Mapping quality')
