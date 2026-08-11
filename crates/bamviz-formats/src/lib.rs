@@ -3,8 +3,8 @@
 use std::io::{Cursor, Read};
 
 use bamviz_core::{
-    AlignedBlock, AlignmentFilter, AlignmentFlags, AlignmentQueryResult, AlignmentSummary,
-    Insertion, ReferenceSequence, ReferenceSpan,
+    deterministic_reservoir_slot, AlignedBlock, AlignmentFilter, AlignmentFlags,
+    AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence, ReferenceSpan,
 };
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
@@ -317,8 +317,15 @@ pub fn query_bam_region_indexed_with_filter(
                 && filter.matches(record.mapping_quality, &flags)
             {
                 total_count += 1;
-                if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
-                    alignments.push(summary_from_record(record, flags, &references));
+                if let Some(slot) =
+                    deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
+                {
+                    let summary = summary_from_record(record, flags, &references);
+                    if slot == alignments.len() {
+                        alignments.push(summary);
+                    } else {
+                        alignments[slot] = summary;
+                    }
                 }
             }
         }
@@ -503,8 +510,15 @@ pub fn query_bam_region_with_filter(
             && filter.matches(record.mapping_quality, &flags)
         {
             total_count += 1;
-            if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
-                alignments.push(summary_from_record(record, flags, &references));
+            if let Some(slot) =
+                deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
+            {
+                let summary = summary_from_record(record, flags, &references);
+                if slot == alignments.len() {
+                    alignments.push(summary);
+                } else {
+                    alignments[slot] = summary;
+                }
             }
         }
     }

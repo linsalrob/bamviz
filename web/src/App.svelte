@@ -364,7 +364,7 @@
                 {/each}
               </div>
               {#if selectedAlignment}<section class="read-details" aria-label="Selected read details"><h3>{selectedAlignment.read_name}</h3><dl><dt>Position</dt><dd>{(selectedAlignment.start + 1).toLocaleString()}–{selectedAlignment.end.toLocaleString()} (1-based)</dd><dt>CIGAR</dt><dd><code>{selectedAlignment.cigar}</code></dd><dt>Mapping quality</dt><dd>{selectedAlignment.mapping_quality}</dd><dt>Flags</dt><dd>{selectedAlignment.flags.raw} ({selectedAlignment.flags.is_reverse ? 'reverse' : 'forward'} strand{selectedAlignment.flags.is_paired ? ', paired' : ''}{selectedAlignment.flags.is_proper_pair ? ', proper pair' : ''})</dd><dt>Clipping</dt><dd>{selectedAlignment.left_clip}′ left; {selectedAlignment.right_clip}′ right</dd><dt>Mate</dt><dd>{#if selectedAlignment.mate_reference && selectedAlignment.mate_start !== null}{selectedAlignment.mate_reference}:{(selectedAlignment.mate_start + 1).toLocaleString()}{selectedAlignment.flags.mate_is_reverse ? ' (reverse)' : ''}{:else}not available{/if}</dd></dl></section>{/if}
-              {#if alignmentsTruncated}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
+              {#if alignmentsTruncated}<small>Showing a deterministic sample of 100 alignments from this viewport.</small>{/if}
             {/if}
           {/if}
         {/if}

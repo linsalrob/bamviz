@@ -33,6 +33,10 @@ M6 performance work has begun: pan and zoom updates are coalesced to one
 viewport query per animation frame, preventing high-frequency pointer events
 from issuing redundant local BAM/BAI reads.
 
+Deep viewports retain a deterministic bounded sample of alignments instead of
+only the first records in coordinate order, while continuing to report the
+exact matching alignment count.
+
 BAI files can now be dropped onto the loader or selected with **Add BAI**. The
 browser parses their local binning and linear-index summaries, checks their
 reference count against the BAM, and uses matching BAI chunks for indexed BGZF
