@@ -1211,6 +1211,20 @@ mod tests {
     }
 
     #[test]
+    fn high_depth_region_retains_bounded_details_and_complete_density() {
+        let records = (0..10_000)
+            .map(|start| record(0, start, 0, 60, &[(100, 0)]))
+            .collect::<Vec<_>>();
+        let bam = compressed_bam(&[("chr1", 10_100)], &records);
+        let result = query_bam_region(&bam, 0, 0, 10_100).expect("valid BAM");
+        assert_eq!(result.total_count, 10_000);
+        assert_eq!(result.alignments.len(), MAX_ALIGNMENT_SUMMARIES);
+        assert!(result.truncated);
+        assert_eq!(result.density.len(), DENSITY_BIN_COUNT);
+        assert!(result.density.iter().any(|count| *count > 100));
+    }
+
+    #[test]
     fn returns_only_alignments_overlapping_a_half_open_region() {
         let bam = compressed_bam(
             &[("chr1", 1_000)],
