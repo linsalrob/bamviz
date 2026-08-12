@@ -274,7 +274,24 @@ fn bai_chunks_for_region(
         )?;
     }
     chunks.sort_by_key(|chunk| chunk.begin);
-    Ok(chunks)
+    Ok(coalesce_bai_chunks(chunks))
+}
+
+/// Merges overlapping or adjacent virtual-offset ranges so an indexed record is
+/// decoded exactly once even when it appears in several BAI bins.
+fn coalesce_bai_chunks(chunks: Vec<BaiChunk>) -> Vec<BaiChunk> {
+    let mut merged: Vec<BaiChunk> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        if let Some(previous) = merged
+            .last_mut()
+            .filter(|previous| chunk.begin <= previous.end)
+        {
+            previous.end = previous.end.max(chunk.end);
+        } else {
+            merged.push(chunk);
+        }
+    }
+    merged
 }
 
 fn bai_bins_for_region(start: u32, end: u32) -> Vec<u32> {
@@ -990,9 +1007,10 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        clip_lengths, fasta_reference_slice, long_cigar_operations, parse_bai_index,
-        parse_bam_header, parse_fai_references, parse_fasta_references, query_bam_reference,
-        query_bam_region, BaiError, BamHeaderError, DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
+        clip_lengths, coalesce_bai_chunks, fasta_reference_slice, long_cigar_operations,
+        parse_bai_index, parse_bam_header, parse_fai_references, parse_fasta_references,
+        query_bam_reference, query_bam_region, BaiChunk, BaiError, BamHeaderError,
+        DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -1074,6 +1092,22 @@ mod tests {
                 bamviz_core::ReferenceSequence::new("chr1", 248_956_422),
                 bamviz_core::ReferenceSequence::new("plasmid", 9),
             ]
+        );
+    }
+
+    #[test]
+    fn coalesces_overlapping_bai_chunks_before_decoding_records() {
+        assert_eq!(
+            coalesce_bai_chunks(vec![
+                BaiChunk { begin: 10, end: 30 },
+                BaiChunk { begin: 20, end: 40 },
+                BaiChunk { begin: 40, end: 50 },
+                BaiChunk { begin: 60, end: 70 },
+            ])
+            .iter()
+            .map(|chunk| (chunk.begin, chunk.end))
+            .collect::<Vec<_>>(),
+            vec![(10, 50), (60, 70)]
         );
     }
 

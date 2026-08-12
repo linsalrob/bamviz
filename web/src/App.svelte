@@ -33,12 +33,15 @@
   let referenceBasesStart = 0
   let referenceGeneration = 0
   let canvas: HTMLCanvasElement
+  let canvasWidth = 0
   let viewStart = 0
   let viewEnd = 1
   let drag: { x: number; start: number; end: number } | null = null
   let viewportRefreshFrame: number | null = null
+  const DENSITY_BASES_PER_PIXEL = 5
 
   $: selectedReferenceData = references.find((reference) => reference.name === selectedReference)
+  $: densityVisible = canvasWidth > 0 && (viewEnd - viewStart) / canvasWidth > DENSITY_BASES_PER_PIXEL
 
   async function loadBam(file: File) {
     const generation = ++loadGeneration
@@ -218,6 +221,7 @@
     const cssWidth = canvas.clientWidth
     const cssHeight = canvas.clientHeight
     if (!cssWidth || !cssHeight) return
+    if (canvasWidth !== cssWidth) canvasWidth = cssWidth
     const ratio = window.devicePixelRatio || 1
     canvas.width = Math.floor(cssWidth * ratio); canvas.height = cssHeight * ratio
     const context = canvas.getContext('2d')!
@@ -233,7 +237,7 @@
     const overviewStart = overviewLeft + overviewWidth * viewStart / selectedReferenceData.length
     const overviewEnd = overviewLeft + overviewWidth * viewEnd / selectedReferenceData.length
     context.fillStyle = '#176d7d'; context.fillRect(overviewStart, 24, Math.max(2, overviewEnd - overviewStart), 10)
-    if (basesPerPixel > 5 && alignmentDensity.length) {
+    if (basesPerPixel > DENSITY_BASES_PER_PIXEL && alignmentDensity.length) {
       const maximum = Math.max(...alignmentDensity, 1)
       const densityTop = 58; const densityHeight = Math.min(90, cssHeight - densityTop - 8)
       context.fillStyle = '#315b6d'; context.fillText('Alignment density', 8, 48)
@@ -391,7 +395,7 @@
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
-            {#if (viewEnd - viewStart) / 700 > 5}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
+            {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
                 <div class="alignment-heading"><span>Read / position (1-based)</span><span>CIGAR / clipping</span><span>MAPQ</span><span>Flags</span></div>
