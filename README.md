@@ -29,9 +29,9 @@ flags, strand, clipping, mate coordinates, and mapping quality. Users can
 filter the visible-region query by mapping quality and secondary,
 supplementary, or duplicate status, then select a read for its details.
 
-M6 performance work has begun: pan and zoom updates are coalesced to one
-viewport query per animation frame, preventing high-frequency pointer events
-from issuing redundant local BAM/BAI reads.
+M6 performance and polish is implemented: pan and zoom updates are coalesced
+to one viewport query per animation frame, preventing high-frequency pointer
+events from issuing redundant local BAM/BAI reads.
 
 The focused alignment viewport also supports keyboard navigation: left/right
 arrows pan, `+`/`−` zoom, and Home resets the whole contig.
@@ -48,6 +48,27 @@ BAI files can now be dropped onto the loader or selected with **Add BAI**. The
 browser parses their local binning and linear-index summaries, checks their
 reference count against the BAM, and uses matching BAI chunks for indexed BGZF
 region reads. BAM-only sessions retain the safe sequential fallback.
+
+## Performance and browser support
+
+bamviz keeps detailed viewport results bounded to 100 deterministic read
+summaries and 256 density bins. The normal large-file workflow is a
+coordinate-sorted BAM with its matching BAI: indexed BGZF queries then decode
+only the chunks selected for the current viewport. BAM-only viewing remains a
+safe sequential fallback, but it must scan the file for each region and is not
+the recommended workflow for large files.
+
+The automated validation suite includes a 10,000-alignment synthetic region to
+verify that detailed results stay bounded while the total count and density
+summary cover every matching alignment. Pan and zoom updates are coalesced to
+one request per animation frame, and Canvas backing buffers are resized only
+when the viewport dimensions change.
+
+Use a current, evergreen browser with WebAssembly, the File API, Canvas 2D,
+and a pointer device. Keyboard navigation works when the alignment viewport is
+focused: left/right pan, `+`/`−` zoom, and Home resets the contig. No browser
+or device-specific performance guarantee is made; file size, read depth,
+indexing, and available memory all affect responsiveness.
 
 ## Project goals
 

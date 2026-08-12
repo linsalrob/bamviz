@@ -10,6 +10,7 @@
   let fileSize = 0
   let state: 'idle' | 'parsing' | 'ready' | 'error' = 'idle'
   let error: BrowserError | null = null
+  let unsupportedBrowser = false
   let fileInput: HTMLInputElement
   let baiInput: HTMLInputElement
   let bamBytes: Uint8Array | null = null
@@ -23,6 +24,7 @@
   let selectedAlignment: AlignmentSummary | null = null
   let alignmentFilter: AlignmentFilter = { min_mapping_quality: 0, include_secondary: true, include_supplementary: true, include_duplicates: true }
   let alignmentState: 'idle' | 'loading' | 'ready' = 'idle'
+  let alignmentReady = false
   let loadGeneration = 0
   let queryGeneration = 0
   let fastaInput: HTMLInputElement
@@ -42,6 +44,7 @@
 
   $: selectedReferenceData = references.find((reference) => reference.name === selectedReference)
   $: densityVisible = canvasWidth > 0 && (viewEnd - viewStart) / canvasWidth > DENSITY_BASES_PER_PIXEL
+  $: viewportBasesPerPixel = Math.ceil((viewEnd - viewStart) / (canvasWidth || 700))
 
   async function loadBam(file: File) {
     const generation = ++loadGeneration
@@ -51,6 +54,7 @@
     selectedAlignment = null
     alignmentCount = 0
     alignmentsTruncated = false
+    alignmentReady = false
     selectedReference = ''
     filename = file.name
     fileSize = file.size
@@ -223,7 +227,10 @@
     if (!cssWidth || !cssHeight) return
     if (canvasWidth !== cssWidth) canvasWidth = cssWidth
     const ratio = window.devicePixelRatio || 1
-    canvas.width = Math.floor(cssWidth * ratio); canvas.height = cssHeight * ratio
+    const pixelWidth = Math.floor(cssWidth * ratio)
+    const pixelHeight = Math.floor(cssHeight * ratio)
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight
     const context = canvas.getContext('2d')!
     context.setTransform(ratio, 0, 0, ratio, 0, 0)
     context.clearRect(0, 0, cssWidth, cssHeight)
@@ -296,6 +303,10 @@
   }
 
   onMount(() => {
+    if (!window.WebAssembly || !window.File || !window.CanvasRenderingContext2D) {
+      unsupportedBrowser = true
+      error = { message: 'bamviz requires WebAssembly, the File API, and Canvas 2D. Please use a current browser.' }
+    }
     window.addEventListener('resize', drawCanvas)
     return () => {
       window.removeEventListener('resize', drawCanvas)
@@ -324,10 +335,12 @@
       alignmentCount = result.total_count
       alignmentsTruncated = result.truncated
       alignmentState = 'ready'
+      alignmentReady = true
     } catch (caught) {
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       alignments = []
       alignmentDensity = []
+      alignmentReady = false
       error = { message: caught instanceof Error ? caught.message : String(caught) }
       state = 'error'
     }
@@ -366,16 +379,16 @@
     <h2>Open a BAM file</h2>
     <p>Drop local <code>.bam</code>, <code>.bai</code>, <code>.fasta</code>, or <code>.fai</code> files here, or choose them individually.</p>
     <input bind:this={fileInput} type="file" accept=".bam,application/octet-stream" onchange={(event) => handleFiles(event.currentTarget.files)} />
-    <button onclick={() => fileInput.click()}>Choose BAM</button>
+    <button disabled={unsupportedBrowser} onclick={() => fileInput.click()}>Choose BAM</button>
     <input bind:this={baiInput} type="file" accept=".bai,application/octet-stream" onchange={(event) => event.currentTarget.files?.[0] && void loadBai(event.currentTarget.files[0])} />
-    <button onclick={() => baiInput.click()}>Add BAI</button>
+    <button disabled={unsupportedBrowser} onclick={() => baiInput.click()}>Add BAI</button>
     <small>BAM headers and selected-contig alignments are decoded locally. A matching BAI enables indexed BGZF region reads; BAM-only sessions use the sequential fallback.</small>{#if baiStatus}<small role="status">{baiStatus}</small>{/if}
   </section>
-  <section class="reference-loader" aria-label="Optional reference files"><h2>Optional reference context</h2><p>Load a FASTA to display reference bases. An FAI is an index only and does not provide sequence.</p><input bind:this={fastaInput} type="file" accept=".fa,.fasta,.fna,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFasta(event.currentTarget.files[0])} /><button onclick={() => fastaInput.click()}>Choose FASTA</button><input bind:this={faiInput} type="file" accept=".fai,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFai(event.currentTarget.files[0])} /><button onclick={() => faiInput.click()}>Choose FAI</button>{#if fastaStatus}<small role="status">{fastaStatus}</small>{/if}</section>
+  <section class="reference-loader" aria-label="Optional reference files"><h2>Optional reference context</h2><p>Load a FASTA to display reference bases. An FAI is an index only and does not provide sequence.</p><input bind:this={fastaInput} type="file" accept=".fa,.fasta,.fna,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFasta(event.currentTarget.files[0])} /><button disabled={unsupportedBrowser} onclick={() => fastaInput.click()}>Choose FASTA</button><input bind:this={faiInput} type="file" accept=".fai,text/plain" onchange={(event) => event.currentTarget.files?.[0] && void loadFai(event.currentTarget.files[0])} /><button disabled={unsupportedBrowser} onclick={() => faiInput.click()}>Choose FAI</button>{#if fastaStatus}<small role="status">{fastaStatus}</small>{/if}</section>
 
   {#if state === 'parsing'}<p role="status">Reading the header from {filename}…</p>{/if}
   {#if error}
-    <section class="error" role="alert"><h2>Could not load {filename || 'BAM file'}</h2><p>{error.message}</p></section>
+    <section class="error" role="alert"><h2>{unsupportedBrowser ? 'Browser support required' : `Could not load ${filename || 'BAM file'}`}</h2><p>{error.message}</p></section>
   {/if}
   {#if state === 'ready'}
     <section class="file-facts" aria-label="Loaded BAM details">
@@ -390,11 +403,11 @@
         {#if selectedReference}
           <p>Selected <strong>{selectedReference}</strong>.</p>
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
-          {#if alignmentState === 'ready'}
+          {#if alignmentReady}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
-            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
-            <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
+            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {viewportBasesPerPixel.toLocaleString()} bp/px</output></nav>
+            <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
             {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">

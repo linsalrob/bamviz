@@ -39,6 +39,15 @@ test('opens the local BAM loader', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Choose BAM' })).toBeVisible()
 })
 
+test('explains required browser APIs when WebAssembly is unavailable', async ({ browser }) => {
+  const context = await browser.newContext()
+  await context.addInitScript(() => Object.defineProperty(window, 'WebAssembly', { value: undefined, configurable: true }))
+  const page = await context.newPage()
+  await page.goto('/')
+  await expect(page.getByRole('alert')).toContainText('requires WebAssembly, the File API, and Canvas 2D')
+  await context.close()
+})
+
 test('loads a BAM and changes the selected contig', async ({ page }) => {
   await page.goto('/')
   await page
@@ -52,6 +61,7 @@ test('loads a BAM and changes the selected contig', async ({ page }) => {
   await page.getByLabel('Alignment viewport').focus()
   await page.keyboard.press('+')
   await expect(page.getByLabel('Viewport coordinates')).toContainText('21–80 (1-based)')
+  await expect(page.getByLabel('Alignment viewport')).toBeFocused()
   await page.keyboard.press('ArrowRight')
   await expect(page.getByLabel('Viewport coordinates')).toContainText('33–92 (1-based)')
   await page.keyboard.press('Home')
