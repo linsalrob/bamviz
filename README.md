@@ -40,6 +40,10 @@ Deep viewports retain a deterministic bounded sample of alignments instead of
 only the first records in coordinate order, while continuing to report the
 exact matching alignment count.
 
+At low zoom, bamviz now renders a bounded, Rust-computed alignment-density
+histogram for the current region. This represents all matching alignments,
+rather than only the sampled detail rows; zooming in restores individual reads.
+
 BAI files can now be dropped onto the loader or selected with **Add BAI**. The
 browser parses their local binning and linear-index summaries, checks their
 reference count against the BAM, and uses matching BAI chunks for indexed BGZF

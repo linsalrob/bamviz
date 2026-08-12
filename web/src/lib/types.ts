@@ -45,6 +45,7 @@ export interface AlignmentQueryResult {
   total_count: number
   alignments: AlignmentSummary[]
   truncated: boolean
+  density: number[]
 }
 
 export interface BrowserError {

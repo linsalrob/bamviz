@@ -3,8 +3,9 @@
 use std::io::{Cursor, Read};
 
 use bamviz_core::{
-    deterministic_reservoir_slot, AlignedBlock, AlignmentFilter, AlignmentFlags,
-    AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence, ReferenceSpan,
+    deterministic_reservoir_slot, AlignedBlock, AlignmentDensity, AlignmentFilter, AlignmentFlags,
+    AlignmentQueryResult, AlignmentSummary, GenomicInterval, Insertion, ReferenceSequence,
+    ReferenceSpan,
 };
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
@@ -14,6 +15,7 @@ const BAI_MAGIC: &[u8; 4] = b"BAI\x01";
 const BAI_METADATA_BIN: u32 = 37_450;
 /// Kept in sync with the number of rows rendered by the M1 browser view.
 pub const MAX_ALIGNMENT_SUMMARIES: usize = 100;
+pub const DENSITY_BIN_COUNT: usize = 256;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum FastaError {
@@ -272,7 +274,24 @@ fn bai_chunks_for_region(
         )?;
     }
     chunks.sort_by_key(|chunk| chunk.begin);
-    Ok(chunks)
+    Ok(coalesce_bai_chunks(chunks))
+}
+
+/// Merges overlapping or adjacent virtual-offset ranges so an indexed record is
+/// decoded exactly once even when it appears in several BAI bins.
+fn coalesce_bai_chunks(chunks: Vec<BaiChunk>) -> Vec<BaiChunk> {
+    let mut merged: Vec<BaiChunk> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        if let Some(previous) = merged
+            .last_mut()
+            .filter(|previous| chunk.begin <= previous.end)
+        {
+            previous.end = previous.end.max(chunk.end);
+        } else {
+            merged.push(chunk);
+        }
+    }
+    merged
 }
 
 fn bai_bins_for_region(start: u32, end: u32) -> Vec<u32> {
@@ -304,6 +323,10 @@ pub fn query_bam_region_indexed_with_filter(
         .map_err(|_| BamHeaderError::InvalidRecordSize)?;
     let mut alignments = Vec::new();
     let mut total_count = 0;
+    let mut density = AlignmentDensity::new(
+        GenomicInterval::new(start, end).unwrap_or(GenomicInterval { start, end: start }),
+        DENSITY_BIN_COUNT,
+    );
     for chunk in chunks {
         let mut reader =
             BgzfChunkReader::new(input, chunk).map_err(|_| BamHeaderError::InvalidRecordSize)?;
@@ -317,6 +340,7 @@ pub fn query_bam_region_indexed_with_filter(
                 && filter.matches(record.mapping_quality, &flags)
             {
                 total_count += 1;
+                density.add(record.start as u32, record.end);
                 if let Some(slot) =
                     deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
                 {
@@ -336,6 +360,7 @@ pub fn query_bam_region_indexed_with_filter(
         total_count,
         truncated: total_count > alignments.len() as u64,
         alignments,
+        density: density.finish(),
     })
 }
 
@@ -497,11 +522,16 @@ pub fn query_bam_region_with_filter(
             total_count: 0,
             alignments: Vec::new(),
             truncated: false,
+            density: vec![0; DENSITY_BIN_COUNT],
         });
     }
 
     let mut alignments = Vec::new();
     let mut total_count = 0_u64;
+    let mut density = AlignmentDensity::new(
+        GenomicInterval::new(start, end).unwrap_or(GenomicInterval { start, end: start }),
+        DENSITY_BIN_COUNT,
+    );
     while let Some(record) = read_bam_record(&mut decoded)? {
         let flags = AlignmentFlags::from_sam_flags(record.flags);
         if record.reference_index == reference_index as i32
@@ -512,6 +542,7 @@ pub fn query_bam_region_with_filter(
             && filter.matches(record.mapping_quality, &flags)
         {
             total_count += 1;
+            density.add(record.start as u32, record.end);
             if let Some(slot) =
                 deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
             {
@@ -530,6 +561,7 @@ pub fn query_bam_region_with_filter(
         total_count,
         truncated: total_count > alignments.len() as u64,
         alignments,
+        density: density.finish(),
     })
 }
 
@@ -975,9 +1007,10 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        clip_lengths, fasta_reference_slice, long_cigar_operations, parse_bai_index,
-        parse_bam_header, parse_fai_references, parse_fasta_references, query_bam_reference,
-        query_bam_region, BaiError, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
+        clip_lengths, coalesce_bai_chunks, fasta_reference_slice, long_cigar_operations,
+        parse_bai_index, parse_bam_header, parse_fai_references, parse_fasta_references,
+        query_bam_reference, query_bam_region, BaiChunk, BaiError, BamHeaderError,
+        DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -1063,6 +1096,22 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_overlapping_bai_chunks_before_decoding_records() {
+        assert_eq!(
+            coalesce_bai_chunks(vec![
+                BaiChunk { begin: 10, end: 30 },
+                BaiChunk { begin: 20, end: 40 },
+                BaiChunk { begin: 40, end: 50 },
+                BaiChunk { begin: 60, end: 70 },
+            ])
+            .iter()
+            .map(|chunk| (chunk.begin, chunk.end))
+            .collect::<Vec<_>>(),
+            vec![(10, 50), (60, 70)]
+        );
+    }
+
+    #[test]
     fn rejects_non_bam_gzip_data() {
         let mut data = GzEncoder::new(Vec::new(), Compression::default());
         data.write_all(b"not BAM").expect("write test data");
@@ -1109,6 +1158,9 @@ mod tests {
                     }],
                 }],
                 truncated: false,
+                density: std::iter::once(1)
+                    .chain(std::iter::repeat_n(0, DENSITY_BIN_COUNT - 1))
+                    .collect(),
             }
         );
         assert_eq!(
@@ -1135,6 +1187,9 @@ mod tests {
                     insertions: vec![],
                 }],
                 truncated: false,
+                density: std::iter::once(1)
+                    .chain(std::iter::repeat_n(0, DENSITY_BIN_COUNT - 1))
+                    .collect(),
             }
         );
     }
