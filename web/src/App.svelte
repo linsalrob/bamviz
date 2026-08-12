@@ -17,6 +17,7 @@
   let baiBytes: Uint8Array | null = null
   let baiStatus = ''
   let alignments: AlignmentSummary[] = []
+  let alignmentDensity: number[] = []
   let alignmentCount = 0
   let alignmentsTruncated = false
   let selectedAlignment: AlignmentSummary | null = null
@@ -43,6 +44,7 @@
     const generation = ++loadGeneration
     references = []
     alignments = []
+    alignmentDensity = []
     selectedAlignment = null
     alignmentCount = 0
     alignmentsTruncated = false
@@ -231,6 +233,19 @@
     const overviewStart = overviewLeft + overviewWidth * viewStart / selectedReferenceData.length
     const overviewEnd = overviewLeft + overviewWidth * viewEnd / selectedReferenceData.length
     context.fillStyle = '#176d7d'; context.fillRect(overviewStart, 24, Math.max(2, overviewEnd - overviewStart), 10)
+    if (basesPerPixel > 5 && alignmentDensity.length) {
+      const maximum = Math.max(...alignmentDensity, 1)
+      const densityTop = 58; const densityHeight = Math.min(90, cssHeight - densityTop - 8)
+      context.fillStyle = '#315b6d'; context.fillText('Alignment density', 8, 48)
+      context.fillStyle = '#176d7d'
+      for (let index = 0; index < alignmentDensity.length; index++) {
+        const height = densityHeight * alignmentDensity[index] / maximum
+        const left = index * cssWidth / alignmentDensity.length
+        const right = (index + 1) * cssWidth / alignmentDensity.length
+        context.fillRect(left, densityTop + densityHeight - height, Math.max(1, right - left), height)
+      }
+      return
+    }
     if (referenceBases && basesPerPixel <= 0.15) {
       context.fillStyle = '#172433'
       for (let index = 0; index < referenceBases.length; index++) {
@@ -298,6 +313,7 @@
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       const previousSelection = selectedAlignment
       alignments = result.alignments
+      alignmentDensity = result.density
       selectedAlignment = previousSelection
         ? alignments.find((alignment) => alignment.read_name === previousSelection.read_name && alignment.start === previousSelection.start && alignment.end === previousSelection.end) ?? null
         : null
@@ -307,6 +323,7 @@
     } catch (caught) {
       if (expectedLoadGeneration !== loadGeneration || generation !== queryGeneration) return
       alignments = []
+      alignmentDensity = []
       error = { message: caught instanceof Error ? caught.message : String(caught) }
       state = 'error'
     }
@@ -374,6 +391,7 @@
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
+            {#if (viewEnd - viewStart) / 700 > 5}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
                 <div class="alignment-heading"><span>Read / position (1-based)</span><span>CIGAR / clipping</span><span>MAPQ</span><span>Flags</span></div>

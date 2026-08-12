@@ -3,8 +3,9 @@
 use std::io::{Cursor, Read};
 
 use bamviz_core::{
-    deterministic_reservoir_slot, AlignedBlock, AlignmentFilter, AlignmentFlags,
-    AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence, ReferenceSpan,
+    deterministic_reservoir_slot, AlignedBlock, AlignmentDensity, AlignmentFilter, AlignmentFlags,
+    AlignmentQueryResult, AlignmentSummary, GenomicInterval, Insertion, ReferenceSequence,
+    ReferenceSpan,
 };
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
@@ -14,6 +15,7 @@ const BAI_MAGIC: &[u8; 4] = b"BAI\x01";
 const BAI_METADATA_BIN: u32 = 37_450;
 /// Kept in sync with the number of rows rendered by the M1 browser view.
 pub const MAX_ALIGNMENT_SUMMARIES: usize = 100;
+pub const DENSITY_BIN_COUNT: usize = 256;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum FastaError {
@@ -304,6 +306,10 @@ pub fn query_bam_region_indexed_with_filter(
         .map_err(|_| BamHeaderError::InvalidRecordSize)?;
     let mut alignments = Vec::new();
     let mut total_count = 0;
+    let mut density = AlignmentDensity::new(
+        GenomicInterval::new(start, end).unwrap_or(GenomicInterval { start, end: start }),
+        DENSITY_BIN_COUNT,
+    );
     for chunk in chunks {
         let mut reader =
             BgzfChunkReader::new(input, chunk).map_err(|_| BamHeaderError::InvalidRecordSize)?;
@@ -317,6 +323,7 @@ pub fn query_bam_region_indexed_with_filter(
                 && filter.matches(record.mapping_quality, &flags)
             {
                 total_count += 1;
+                density.add(record.start as u32, record.end);
                 if let Some(slot) =
                     deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
                 {
@@ -336,6 +343,7 @@ pub fn query_bam_region_indexed_with_filter(
         total_count,
         truncated: total_count > alignments.len() as u64,
         alignments,
+        density: density.finish(),
     })
 }
 
@@ -497,11 +505,16 @@ pub fn query_bam_region_with_filter(
             total_count: 0,
             alignments: Vec::new(),
             truncated: false,
+            density: vec![0; DENSITY_BIN_COUNT],
         });
     }
 
     let mut alignments = Vec::new();
     let mut total_count = 0_u64;
+    let mut density = AlignmentDensity::new(
+        GenomicInterval::new(start, end).unwrap_or(GenomicInterval { start, end: start }),
+        DENSITY_BIN_COUNT,
+    );
     while let Some(record) = read_bam_record(&mut decoded)? {
         let flags = AlignmentFlags::from_sam_flags(record.flags);
         if record.reference_index == reference_index as i32
@@ -512,6 +525,7 @@ pub fn query_bam_region_with_filter(
             && filter.matches(record.mapping_quality, &flags)
         {
             total_count += 1;
+            density.add(record.start as u32, record.end);
             if let Some(slot) =
                 deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
             {
@@ -530,6 +544,7 @@ pub fn query_bam_region_with_filter(
         total_count,
         truncated: total_count > alignments.len() as u64,
         alignments,
+        density: density.finish(),
     })
 }
 
@@ -977,7 +992,7 @@ mod tests {
     use super::{
         clip_lengths, fasta_reference_slice, long_cigar_operations, parse_bai_index,
         parse_bam_header, parse_fai_references, parse_fasta_references, query_bam_reference,
-        query_bam_region, BaiError, BamHeaderError, MAX_ALIGNMENT_SUMMARIES,
+        query_bam_region, BaiError, BamHeaderError, DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -1109,6 +1124,9 @@ mod tests {
                     }],
                 }],
                 truncated: false,
+                density: std::iter::once(1)
+                    .chain(std::iter::repeat_n(0, DENSITY_BIN_COUNT - 1))
+                    .collect(),
             }
         );
         assert_eq!(
@@ -1135,6 +1153,9 @@ mod tests {
                     insertions: vec![],
                 }],
                 truncated: false,
+                density: std::iter::once(1)
+                    .chain(std::iter::repeat_n(0, DENSITY_BIN_COUNT - 1))
+                    .collect(),
             }
         );
     }

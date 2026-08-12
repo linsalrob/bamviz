@@ -125,6 +125,55 @@ pub struct AlignmentQueryResult {
     pub total_count: u64,
     pub alignments: Vec<AlignmentSummary>,
     pub truncated: bool,
+    /// Per-bin counts of alignments overlapping the queried interval.
+    pub density: Vec<u32>,
+}
+
+/// Produces fixed-width alignment-density bins for a 0-based half-open region.
+///
+/// Each bin counts alignments that overlap it, rather than bases covered.  This
+/// gives a bounded low-zoom summary while retaining the exact query count.
+#[derive(Clone, Debug)]
+pub struct AlignmentDensity {
+    region: GenomicInterval,
+    differences: Vec<i64>,
+}
+
+impl AlignmentDensity {
+    pub fn new(region: GenomicInterval, bin_count: usize) -> Self {
+        Self {
+            region,
+            differences: vec![0; bin_count.saturating_add(1)],
+        }
+    }
+
+    pub fn add(&mut self, start: u32, end: u32) {
+        if self.differences.len() <= 1 || end <= self.region.start || start >= self.region.end {
+            return;
+        }
+        let width = u64::from(self.region.len());
+        if width == 0 {
+            return;
+        }
+        let bins = self.differences.len() - 1;
+        let clipped_start = start.max(self.region.start) - self.region.start;
+        let clipped_end = end.min(self.region.end) - self.region.start;
+        let first = ((u64::from(clipped_start) * bins as u64) / width) as usize;
+        let last = (((u64::from(clipped_end - 1) * bins as u64) / width) as usize).min(bins - 1);
+        self.differences[first] += 1;
+        self.differences[last + 1] -= 1;
+    }
+
+    pub fn finish(self) -> Vec<u32> {
+        let mut count = 0_i64;
+        self.differences[..self.differences.len().saturating_sub(1)]
+            .iter()
+            .map(|difference| {
+                count += difference;
+                count.max(0) as u32
+            })
+            .collect()
+    }
 }
 
 /// Selects a deterministic reservoir slot for the `seen`th item in a stream.
@@ -168,7 +217,10 @@ impl GenomicInterval {
 
 #[cfg(test)]
 mod tests {
-    use super::{deterministic_reservoir_slot, AlignmentFilter, AlignmentFlags, GenomicInterval};
+    use super::{
+        deterministic_reservoir_slot, AlignmentDensity, AlignmentFilter, AlignmentFlags,
+        GenomicInterval,
+    };
 
     #[test]
     fn interval_uses_half_open_coordinates() {
@@ -205,5 +257,14 @@ mod tests {
                 .filter_map(|seen| deterministic_reservoir_slot(seen, 10))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn density_counts_overlapping_alignments_in_half_open_bins() {
+        let mut density = AlignmentDensity::new(GenomicInterval::new(0, 100).unwrap(), 4);
+        density.add(0, 25);
+        density.add(24, 76);
+        density.add(100, 101);
+        assert_eq!(density.finish(), vec![2, 1, 1, 1]);
     }
 }
