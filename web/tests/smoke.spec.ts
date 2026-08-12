@@ -45,6 +45,7 @@ test('explains required browser APIs when WebAssembly is unavailable', async ({ 
   const page = await context.newPage()
   await page.goto('/')
   await expect(page.getByRole('alert')).toContainText('requires WebAssembly, the File API, and Canvas 2D')
+  await expect(page.getByRole('button', { name: 'Choose BAM' })).toBeDisabled()
   await context.close()
 })
 

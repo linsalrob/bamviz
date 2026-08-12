@@ -45,6 +45,7 @@
   $: selectedReferenceData = references.find((reference) => reference.name === selectedReference)
   $: densityVisible = canvasWidth > 0 && (viewEnd - viewStart) / canvasWidth > DENSITY_BASES_PER_PIXEL
   $: viewportBasesPerPixel = Math.ceil((viewEnd - viewStart) / (canvasWidth || 700))
+  $: renderCurrentResults = alignmentReady && alignmentState === 'ready'
 
   async function loadBam(file: File) {
     const generation = ++loadGeneration
@@ -165,6 +166,7 @@
 
   function refreshViewport() {
     if (viewportRefreshFrame !== null) return
+    if (alignmentReady) alignmentState = 'loading'
     viewportRefreshFrame = requestAnimationFrame(() => {
       viewportRefreshFrame = null
       void refreshReferenceContext()
@@ -244,7 +246,7 @@
     const overviewStart = overviewLeft + overviewWidth * viewStart / selectedReferenceData.length
     const overviewEnd = overviewLeft + overviewWidth * viewEnd / selectedReferenceData.length
     context.fillStyle = '#176d7d'; context.fillRect(overviewStart, 24, Math.max(2, overviewEnd - overviewStart), 10)
-    if (basesPerPixel > DENSITY_BASES_PER_PIXEL && alignmentDensity.length) {
+    if (basesPerPixel > DENSITY_BASES_PER_PIXEL && renderCurrentResults && alignmentDensity.length) {
       const maximum = Math.max(...alignmentDensity, 1)
       const densityTop = 58; const densityHeight = Math.min(90, cssHeight - densityTop - 8)
       context.fillStyle = '#315b6d'; context.fillText('Alignment density', 8, 48)
@@ -265,7 +267,7 @@
       }
     }
     const lanes: number[] = []
-    for (const alignment of alignments) {
+    for (const alignment of renderCurrentResults ? alignments : []) {
       if (alignment.end <= viewStart || alignment.start >= viewEnd) continue
       let lane = lanes.findIndex((end) => end <= alignment.start)
       if (lane === -1) { lane = lanes.length; lanes.push(alignment.end) } else lanes[lane] = alignment.end
@@ -347,11 +349,13 @@
   }
 
   function handleFiles(files: FileList | null) {
+    if (unsupportedBrowser) return
     const file = files?.[0]
     if (file) void loadBam(file)
   }
 
   function loadDroppedFiles(files: FileList | null) {
+    if (unsupportedBrowser) return
     for (const file of Array.from(files ?? [])) {
       const name = file.name.toLowerCase()
       if (name.endsWith('.bam')) void loadBam(file)
@@ -409,7 +413,7 @@
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {viewportBasesPerPixel.toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
             {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
-            {#if alignments.length}
+            {#if renderCurrentResults && alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
                 <div class="alignment-heading"><span>Read / position (1-based)</span><span>CIGAR / clipping</span><span>MAPQ</span><span>Flags</span></div>
                 {#each alignments.slice(0, 100) as alignment}
