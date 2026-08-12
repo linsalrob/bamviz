@@ -330,6 +330,8 @@ pub fn query_bam_region_indexed_with_filter(
             }
         }
     }
+    alignments
+        .sort_by_key(|alignment| (alignment.start, alignment.end, alignment.read_name.clone()));
     Ok(AlignmentQueryResult {
         total_count,
         truncated: total_count > alignments.len() as u64,
@@ -522,6 +524,8 @@ pub fn query_bam_region_with_filter(
             }
         }
     }
+    alignments
+        .sort_by_key(|alignment| (alignment.start, alignment.end, alignment.read_name.clone()));
     Ok(AlignmentQueryResult {
         total_count,
         truncated: total_count > alignments.len() as u64,
@@ -1145,6 +1149,10 @@ mod tests {
         assert_eq!(result.total_count, (MAX_ALIGNMENT_SUMMARIES + 1) as u64);
         assert_eq!(result.alignments.len(), MAX_ALIGNMENT_SUMMARIES);
         assert!(result.truncated);
+        assert!(result
+            .alignments
+            .windows(2)
+            .all(|pair| pair[0].start <= pair[1].start));
     }
 
     #[test]
