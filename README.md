@@ -33,6 +33,9 @@ M6 performance work has begun: pan and zoom updates are coalesced to one
 viewport query per animation frame, preventing high-frequency pointer events
 from issuing redundant local BAM/BAI reads.
 
+The focused alignment viewport also supports keyboard navigation: left/right
+arrows pan, `+`/`−` zoom, and Home resets the whole contig.
+
 Deep viewports retain a deterministic bounded sample of alignments instead of
 only the first records in coordinate order, while continuing to report the
 exact matching alignment count.
