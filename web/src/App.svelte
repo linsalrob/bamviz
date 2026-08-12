@@ -89,11 +89,12 @@
     } catch (caught) { baiStatus = caught instanceof Error ? caught.message : String(caught) }
   }
 
-  function resetView(reference = selectedReferenceData) {
+  function resetView(reference = selectedReferenceData, refreshAlignments = false) {
     if (!reference) return
     viewStart = 0
     viewEnd = Math.max(1, reference.length)
-    void refreshReferenceContext(reference)
+    if (refreshAlignments) refreshViewport()
+    else void refreshReferenceContext(reference)
   }
 
   function selectReference() {
@@ -207,7 +208,7 @@
     else if (event.key === 'ArrowRight') { event.preventDefault(); panBy(0.2) }
     else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomBy(0.6) }
     else if (event.key === '-') { event.preventDefault(); zoomBy(1 / 0.6) }
-    else if (event.key === 'Home') { event.preventDefault(); resetView() }
+    else if (event.key === 'Home') { event.preventDefault(); resetView(undefined, true) }
   }
 
   function drawCanvas() {
@@ -371,7 +372,7 @@
           {#if alignmentState === 'ready'}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
-            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView()}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output>{Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
+            <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {Math.ceil((viewEnd - viewStart) / 700).toLocaleString()} bp/px</output></nav>
             <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
             {#if alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
