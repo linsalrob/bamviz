@@ -127,6 +127,24 @@ pub struct AlignmentQueryResult {
     pub truncated: bool,
 }
 
+/// Selects a deterministic reservoir slot for the `seen`th item in a stream.
+///
+/// This keeps a bounded, reproducible sample across a deep viewport rather than
+/// privileging the first records encountered in coordinate order.
+pub fn deterministic_reservoir_slot(seen: u64, capacity: usize) -> Option<usize> {
+    if capacity == 0 {
+        return None;
+    }
+    if seen < capacity as u64 {
+        return Some(seen as usize);
+    }
+    let mut value = seen.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    let candidate = (value ^ (value >> 31)) % (seen + 1);
+    (candidate < capacity as u64).then_some(candidate as usize)
+}
+
 /// A 0-based, half-open genomic interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GenomicInterval {
@@ -150,7 +168,7 @@ impl GenomicInterval {
 
 #[cfg(test)]
 mod tests {
-    use super::{AlignmentFilter, AlignmentFlags, GenomicInterval};
+    use super::{deterministic_reservoir_slot, AlignmentFilter, AlignmentFlags, GenomicInterval};
 
     #[test]
     fn interval_uses_half_open_coordinates() {
@@ -173,5 +191,19 @@ mod tests {
             include_duplicates: false,
         }
         .matches(60, &flags));
+    }
+
+    #[test]
+    fn reservoir_is_bounded_and_reproducible() {
+        let slots = (0..1_000)
+            .filter_map(|seen| deterministic_reservoir_slot(seen, 10))
+            .collect::<Vec<_>>();
+        assert!(slots.iter().all(|slot| *slot < 10));
+        assert_eq!(
+            slots,
+            (0..1_000)
+                .filter_map(|seen| deterministic_reservoir_slot(seen, 10))
+                .collect::<Vec<_>>()
+        );
     }
 }

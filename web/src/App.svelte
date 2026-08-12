@@ -196,8 +196,8 @@
   function drawCanvas() {
     if (!canvas || !selectedReferenceData) return
     const cssWidth = canvas.clientWidth
-    const cssHeight = 420
-    if (!cssWidth) return
+    const cssHeight = canvas.clientHeight
+    if (!cssWidth || !cssHeight) return
     const ratio = window.devicePixelRatio || 1
     canvas.width = Math.floor(cssWidth * ratio); canvas.height = cssHeight * ratio
     const context = canvas.getContext('2d')!
@@ -229,7 +229,7 @@
       if (y > cssHeight - 10) continue
       const left = toX(Math.max(alignment.start, viewStart)); const right = toX(Math.min(alignment.end, viewEnd))
       context.fillStyle = alignment.flags.is_reverse ? '#6f58a7' : '#176d7d'
-      context.fillRect(left, y, Math.max(1, right - left), 13)
+      context.fillRect(left, y, right - left, 13)
       if (basesPerPixel <= 1.5) {
         for (const block of alignment.blocks) {
           for (let index = 0; index < block.bases.length; index++) {
@@ -364,7 +364,7 @@
                 {/each}
               </div>
               {#if selectedAlignment}<section class="read-details" aria-label="Selected read details"><h3>{selectedAlignment.read_name}</h3><dl><dt>Position</dt><dd>{(selectedAlignment.start + 1).toLocaleString()}–{selectedAlignment.end.toLocaleString()} (1-based)</dd><dt>CIGAR</dt><dd><code>{selectedAlignment.cigar}</code></dd><dt>Mapping quality</dt><dd>{selectedAlignment.mapping_quality}</dd><dt>Flags</dt><dd>{selectedAlignment.flags.raw} ({selectedAlignment.flags.is_reverse ? 'reverse' : 'forward'} strand{selectedAlignment.flags.is_paired ? ', paired' : ''}{selectedAlignment.flags.is_proper_pair ? ', proper pair' : ''})</dd><dt>Clipping</dt><dd>{selectedAlignment.left_clip}′ left; {selectedAlignment.right_clip}′ right</dd><dt>Mate</dt><dd>{#if selectedAlignment.mate_reference && selectedAlignment.mate_start !== null}{selectedAlignment.mate_reference}:{(selectedAlignment.mate_start + 1).toLocaleString()}{selectedAlignment.flags.mate_is_reverse ? ' (reverse)' : ''}{:else}not available{/if}</dd></dl></section>{/if}
-              {#if alignmentsTruncated}<small>Showing the first 100 alignments. M2 will provide viewport-based rendering.</small>{/if}
+              {#if alignmentsTruncated}<small>Showing a deterministic sample of 100 alignments from this viewport.</small>{/if}
             {/if}
           {/if}
         {/if}
@@ -382,6 +382,6 @@
   .file-loader, .reference-loader { display: grid; gap: .8rem; border: 2px dashed #53788b; text-align: center } .file-loader input, .reference-loader input { display: none } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } small { color: #536473 }
   .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
   .alignment-filters { display:flex; flex-wrap:wrap; gap:.7rem; border:1px solid #d2dde4; border-radius:.25rem }.alignment-filters label { display:flex; align-items:center; gap:.25rem }.alignment-filters input[type=number] { width:5rem }.alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .9fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment { width:100%; color:inherit; text-align:left; background:#fff; border:0; border-radius:0 }.alignment:nth-child(odd) { background: #f4f8fa }.alignment.selected { outline:2px solid #176d7d; outline-offset:-2px }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }.read-details { margin-top:.7rem; background:#f4f8fa }.read-details h3 { margin-top:0 }.read-details dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:0 }.read-details dt { font-weight:700 }.read-details dd { margin:0 }
-  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:420px; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
+  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:90vh; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column } }
 </style>

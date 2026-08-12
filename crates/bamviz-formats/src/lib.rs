@@ -3,8 +3,8 @@
 use std::io::{Cursor, Read};
 
 use bamviz_core::{
-    AlignedBlock, AlignmentFilter, AlignmentFlags, AlignmentQueryResult, AlignmentSummary,
-    Insertion, ReferenceSequence, ReferenceSpan,
+    deterministic_reservoir_slot, AlignedBlock, AlignmentFilter, AlignmentFlags,
+    AlignmentQueryResult, AlignmentSummary, Insertion, ReferenceSequence, ReferenceSpan,
 };
 use flate2::read::MultiGzDecoder;
 use thiserror::Error;
@@ -317,12 +317,21 @@ pub fn query_bam_region_indexed_with_filter(
                 && filter.matches(record.mapping_quality, &flags)
             {
                 total_count += 1;
-                if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
-                    alignments.push(summary_from_record(record, flags, &references));
+                if let Some(slot) =
+                    deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
+                {
+                    let summary = summary_from_record(record, flags, &references);
+                    if slot == alignments.len() {
+                        alignments.push(summary);
+                    } else {
+                        alignments[slot] = summary;
+                    }
                 }
             }
         }
     }
+    alignments
+        .sort_by_key(|alignment| (alignment.start, alignment.end, alignment.read_name.clone()));
     Ok(AlignmentQueryResult {
         total_count,
         truncated: total_count > alignments.len() as u64,
@@ -503,11 +512,20 @@ pub fn query_bam_region_with_filter(
             && filter.matches(record.mapping_quality, &flags)
         {
             total_count += 1;
-            if alignments.len() < MAX_ALIGNMENT_SUMMARIES {
-                alignments.push(summary_from_record(record, flags, &references));
+            if let Some(slot) =
+                deterministic_reservoir_slot(total_count - 1, MAX_ALIGNMENT_SUMMARIES)
+            {
+                let summary = summary_from_record(record, flags, &references);
+                if slot == alignments.len() {
+                    alignments.push(summary);
+                } else {
+                    alignments[slot] = summary;
+                }
             }
         }
     }
+    alignments
+        .sort_by_key(|alignment| (alignment.start, alignment.end, alignment.read_name.clone()));
     Ok(AlignmentQueryResult {
         total_count,
         truncated: total_count > alignments.len() as u64,
@@ -1131,6 +1149,10 @@ mod tests {
         assert_eq!(result.total_count, (MAX_ALIGNMENT_SUMMARIES + 1) as u64);
         assert_eq!(result.alignments.len(), MAX_ALIGNMENT_SUMMARIES);
         assert!(result.truncated);
+        assert!(result
+            .alignments
+            .windows(2)
+            .all(|pair| pair[0].start <= pair[1].start));
     }
 
     #[test]
