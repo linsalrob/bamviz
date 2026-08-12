@@ -61,6 +61,8 @@ test('loads a BAM and changes the selected contig', async ({ page }) => {
   await expect(page.getByText('synthetic.bam.bai', { exact: true })).toBeVisible()
   await expect(page.getByText('BAI loaded: 2 reference indexes available for this BAM')).toBeVisible()
   await expect(page.getByText('1 mapped alignment found.')).toBeVisible()
+  await expect(page.getByText('Drag the viewport’s lower-right edge to resize it horizontally.')).toBeVisible()
+  await expect(page.locator('.alignment-viewport')).toHaveCSS('resize', 'horizontal')
   await page.getByLabel('Alignment viewport').focus()
   await page.keyboard.press('+')
   await expect(page.getByLabel('Viewport coordinates')).toContainText('21–80 (1-based)')

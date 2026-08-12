@@ -38,6 +38,7 @@
   let referenceBasesStart = 0
   let referenceGeneration = 0
   let canvas: HTMLCanvasElement
+  let viewport: HTMLDivElement
   let canvasWidth = 0
   let viewStart = 0
   let viewEnd = 1
@@ -310,6 +311,12 @@
     }
   }
 
+  function observeViewport(element: HTMLDivElement) {
+    const observer = 'ResizeObserver' in window ? new ResizeObserver(drawCanvas) : null
+    observer?.observe(element)
+    return { destroy: () => observer?.disconnect() }
+  }
+
   onMount(() => {
     if (!window.WebAssembly || !window.File || !window.CanvasRenderingContext2D) {
       unsupportedBrowser = true
@@ -423,7 +430,7 @@
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {viewportBasesPerPixel.toLocaleString()} bp/px</output></nav>
-            <canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small>
+            <div bind:this={viewport} class="alignment-viewport" use:observeViewport><canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts viewport-resize" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas></div><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small><small id="viewport-resize">Drag the viewport’s lower-right edge to resize it horizontally.</small>
             {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if renderCurrentResults && alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
@@ -451,6 +458,6 @@
   .file-loaders { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1rem; max-width:700px }.file-loader, .reference-loader { display: grid; align-content:start; gap: .55rem; border: 2px dashed #53788b; text-align: center } .file-loader p, .reference-loader p { margin:.1rem 0 .35rem }.file-loader input, .reference-loader input { display: none }.file-actions { display:grid; gap:.3rem; justify-items:center; min-height:3.8rem }.file-actions small { overflow-wrap:anywhere } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } button:disabled { cursor:not-allowed; opacity:.55 } small { color: #536473 }
   .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
   .alignment-filters { display:flex; flex-wrap:wrap; gap:.7rem; border:1px solid #d2dde4; border-radius:.25rem }.alignment-filters label { display:flex; align-items:center; gap:.25rem }.alignment-filters input[type=number] { width:5rem }.alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .9fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment { width:100%; color:inherit; text-align:left; background:#fff; border:0; border-radius:0 }.alignment:nth-child(odd) { background: #f4f8fa }.alignment.selected { outline:2px solid #176d7d; outline-offset:-2px }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }.read-details { margin-top:.7rem; background:#f4f8fa }.read-details h3 { margin-top:0 }.read-details dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:0 }.read-details dt { font-weight:700 }.read-details dd { margin:0 }
-  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-canvas { width:100%; height:90vh; touch-action:none; border:1px solid #b8c8d1; border-radius:.3rem; cursor:grab }
+  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-viewport { width:100%; min-width:20rem; max-width:100%; resize:horizontal; overflow:hidden; border:1px solid #b8c8d1; border-radius:.3rem }.alignment-canvas { display:block; width:100%; height:90vh; touch-action:none; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column }.file-loaders { grid-template-columns:1fr; max-width:none } }
 </style>
