@@ -63,6 +63,8 @@ test('loads a BAM and changes the selected contig', async ({ page }) => {
   await expect(page.getByText('1 mapped alignment found.')).toBeVisible()
   await expect(page.getByText('Drag the viewport’s lower-right edge to resize it horizontally.')).toBeVisible()
   await expect(page.locator('.alignment-viewport')).toHaveCSS('resize', 'horizontal')
+  await page.setViewportSize({ width: 320, height: 720 })
+  expect(await page.locator('.alignment-viewport').evaluate((viewport) => viewport.getBoundingClientRect().right <= viewport.parentElement!.getBoundingClientRect().right)).toBe(true)
   await page.getByLabel('Alignment viewport').focus()
   await page.keyboard.press('+')
   await expect(page.getByLabel('Viewport coordinates')).toContainText('21–80 (1-based)')
