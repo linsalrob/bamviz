@@ -64,6 +64,10 @@ test('loads a BAM and changes the selected contig', async ({ page }) => {
   await expect(page.getByText('Drag the two-line grip on the panel’s right edge to resize the complete viewer. Arrow keys resize it when the grip is focused.')).toBeVisible()
   const resizeGrip = page.getByRole('button', { name: 'Resize alignment panel' })
   await expect(resizeGrip).toHaveCSS('cursor', 'ew-resize')
+  expect(await resizeGrip.evaluate((grip) => {
+    const list = grip.parentElement!.querySelector('.alignment-list')
+    return list === null || Boolean(grip.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING)
+  })).toBe(true)
   const panelWidth = await page.getByRole('region', { name: 'BAM references' }).evaluate((panel) => panel.getBoundingClientRect().width)
   await resizeGrip.press('ArrowLeft')
   await expect.poll(() => page.getByRole('region', { name: 'BAM references' }).evaluate((panel) => panel.getBoundingClientRect().width)).toBeLessThan(panelWidth)
