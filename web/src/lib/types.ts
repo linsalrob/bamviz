@@ -37,7 +37,7 @@ export interface AlignmentFilter {
   include_duplicates: boolean
 }
 
-export interface AlignedBlock { start: number; end: number; bases: string }
+export interface AlignedBlock { start: number; end: number; bases: string; known_matches: boolean[] }
 export interface ReferenceSpan { start: number; end: number }
 export interface Insertion { position: number; bases: string }
 

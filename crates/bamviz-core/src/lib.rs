@@ -103,6 +103,9 @@ pub struct AlignedBlock {
     pub start: u32,
     pub end: u32,
     pub bases: String,
+    /// Per-base flags for BAM `=` sequence symbols, which are known to match
+    /// the reference even though their resolved nucleotide is unavailable.
+    pub known_matches: Vec<bool>,
 }
 
 /// A reference-consuming CIGAR gap such as D or N.

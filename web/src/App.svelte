@@ -327,12 +327,14 @@
             if (position < viewStart || position >= viewEnd) continue
             const base = block.bases[index].toUpperCase()
             const referenceBase = referenceBaseAt(position)
-            const colour = highlightDifferences && referenceBase === base
+            const isReferenceMatch = block.known_matches[index] === true || referenceBase === base
+            const displayBase = block.known_matches[index] && referenceBase ? referenceBase : base
+            const colour = highlightDifferences && isReferenceMatch
               ? '#aab7c0'
-              : ({ A: '#4daf4a', C: '#377eb8', G: '#ffb000', T: '#e34a33' } as Record<string, string>)[base] ?? '#7f8c8d'
+              : ({ A: '#4daf4a', C: '#377eb8', G: '#ffb000', T: '#e34a33' } as Record<string, string>)[displayBase] ?? '#7f8c8d'
             const x = toX(position); const width = Math.max(1, 1 / basesPerPixel)
             context.fillStyle = colour; context.fillRect(x, y, width, 13)
-            if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(base, x + 1, y + 11) }
+            if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(displayBase, x + 1, y + 11) }
           }
         }
         context.fillStyle = '#f7fafc'
