@@ -39,10 +39,12 @@
   let referenceGeneration = 0
   let canvas: HTMLCanvasElement
   let viewport: HTMLDivElement
+  let contigsPanel: HTMLElement
   let canvasWidth = 0
   let viewStart = 0
   let viewEnd = 1
   let drag: { x: number; start: number; end: number } | null = null
+  let panelResize: { x: number; width: number } | null = null
   let viewportRefreshFrame: number | null = null
   const DENSITY_BASES_PER_PIXEL = 5
 
@@ -219,6 +221,35 @@
   }
 
   function pointerUp() { drag = null }
+
+  function resizePanelBy(delta: number) {
+    if (!contigsPanel) return
+    const parentWidth = contigsPanel.parentElement?.clientWidth ?? contigsPanel.clientWidth
+    const minimum = Math.min(320, parentWidth)
+    const width = Math.max(minimum, Math.min(parentWidth, contigsPanel.getBoundingClientRect().width + delta))
+    contigsPanel.style.width = `${width}px`
+  }
+
+  function panelResizeDown(event: PointerEvent) {
+    panelResize = { x: event.clientX, width: contigsPanel.getBoundingClientRect().width }
+    ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  }
+
+  function panelResizeMove(event: PointerEvent) {
+    if (!panelResize) return
+    const parentWidth = contigsPanel.parentElement?.clientWidth ?? panelResize.width
+    const minimum = Math.min(320, parentWidth)
+    const width = Math.max(minimum, Math.min(parentWidth, panelResize.width + event.clientX - panelResize.x))
+    contigsPanel.style.width = `${width}px`
+  }
+
+  function panelResizeUp() { panelResize = null }
+
+  function panelResizeKeyDown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    resizePanelBy(event.key === 'ArrowLeft' ? -24 : 24)
+  }
 
   function keyDown(event: KeyboardEvent) {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return
@@ -418,7 +449,7 @@
       <strong>{filename}</strong><span>{fileSize.toLocaleString()} bytes</span><span>{references.length} reference{references.length === 1 ? '' : 's'}</span>
     </section>
     {#if references.length}
-      <section class="contigs" aria-label="BAM references">
+      <section bind:this={contigsPanel} class="contigs" aria-label="BAM references">
         <label for="contig">Reference / contig</label>
         <select id="contig" bind:value={selectedReference} onchange={selectReference}>
           {#each references as reference}<option value={reference.name}>{reference.name} — {reference.length.toLocaleString()} bp</option>{/each}
@@ -430,7 +461,7 @@
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
             <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {viewportBasesPerPixel.toLocaleString()} bp/px</output></nav>
-            <div bind:this={viewport} class="alignment-viewport" use:observeViewport><canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts viewport-resize" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas></div><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small><small id="viewport-resize">Drag the viewport’s lower-right edge to resize it horizontally.</small>
+            <div bind:this={viewport} class="alignment-viewport" use:observeViewport><canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts viewport-resize" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas></div><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small><small id="viewport-resize">Drag the two-line grip on the panel’s right edge to resize the complete viewer. Arrow keys resize it when the grip is focused.</small>
             {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if renderCurrentResults && alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">
@@ -444,6 +475,7 @@
             {/if}
           {/if}
         {/if}
+        <button class="panel-resize-grip" aria-label="Resize alignment panel" aria-describedby="viewport-resize" onpointerdown={panelResizeDown} onpointermove={panelResizeMove} onpointerup={panelResizeUp} onpointercancel={panelResizeUp} onkeydown={panelResizeKeyDown}></button>
       </section>
     {:else}
       <section class="error" role="status"><h2>No references in this BAM</h2><p>The header is valid but contains no reference sequences.</p></section>
@@ -456,8 +488,8 @@
   header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem max(1rem, calc((100% - 1100px) / 2)); color: #fff; background: #173e51 } h1 { margin: 0 } header p { margin: .1rem 0 } header span { padding: .4rem .7rem; border: 1px solid #8ed7c4; border-radius: 2rem }
   main { display: grid; gap: 1rem; max-width: 1100px; margin: auto; padding: 1rem } section { background: #fff; border: 1px solid #c6d3dc; border-radius: .5rem; padding: 1rem } h2 { margin-top: 0 }
   .file-loaders { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1rem; max-width:700px }.file-loader, .reference-loader { display: grid; align-content:start; gap: .55rem; border: 2px dashed #53788b; text-align: center } .file-loader p, .reference-loader p { margin:.1rem 0 .35rem }.file-loader input, .reference-loader input { display: none }.file-actions { display:grid; gap:.3rem; justify-items:center; min-height:3.8rem }.file-actions small { overflow-wrap:anywhere } button { justify-self: center; padding: .55rem 1rem; color: #fff; background: #176d7d; border: 0; border-radius: .3rem; cursor: pointer } button:disabled { cursor:not-allowed; opacity:.55 } small { color: #536473 }
-  .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { display: grid; gap: .7rem; max-width: 48rem }.contigs select { padding: .45rem }.error { border-color: #bc4545; color: #702222 }
+  .file-facts { display: flex; flex-wrap: wrap; gap: 1rem }.contigs { position:relative; display: grid; gap: .7rem; width:min(48rem, 100%); min-width:min(20rem, 100%); max-width:100% }.contigs select { padding: .45rem }.panel-resize-grip { position:absolute; top:50%; right:.35rem; width:1.3rem; height:5rem; transform:translateY(-50%); cursor:ew-resize; touch-action:none; border:0; border-radius:.25rem; background:linear-gradient(90deg, transparent 35%, #53788b 35% 42%, transparent 42% 58%, #53788b 58% 65%, transparent 65%) }.panel-resize-grip:focus-visible { outline:2px solid #176d7d; outline-offset:2px }.error { border-color: #bc4545; color: #702222 }
   .alignment-filters { display:flex; flex-wrap:wrap; gap:.7rem; border:1px solid #d2dde4; border-radius:.25rem }.alignment-filters label { display:flex; align-items:center; gap:.25rem }.alignment-filters input[type=number] { width:5rem }.alignment-list { overflow-x: auto; border: 1px solid #d2dde4; border-radius: .25rem; font-variant-numeric: tabular-nums }.alignment, .alignment-heading { display: grid; grid-template-columns: 1.4fr 1fr .7fr .9fr; gap: .7rem; padding: .45rem .6rem; min-width: 29rem }.alignment { width:100%; color:inherit; text-align:left; background:#fff; border:0; border-radius:0 }.alignment:nth-child(odd) { background: #f4f8fa }.alignment.selected { outline:2px solid #176d7d; outline-offset:-2px }.alignment-heading { color: #fff; background: #315b6d; font-weight: 700 }.read-details { margin-top:.7rem; background:#f4f8fa }.read-details h3 { margin-top:0 }.read-details dl { display:grid; grid-template-columns:max-content 1fr; gap:.35rem .8rem; margin:0 }.read-details dt { font-weight:700 }.read-details dd { margin:0 }
-  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-viewport { width:100%; min-width:min(20rem, 100%); max-width:100%; resize:horizontal; overflow:hidden; border:1px solid #b8c8d1; border-radius:.3rem }.alignment-canvas { display:block; width:100%; height:90vh; touch-action:none; cursor:grab }
+  .viewer-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem }.viewer-controls button { justify-self:auto }.viewer-controls output { margin-left:auto; color:#536473 }.alignment-viewport { width:100%; overflow:hidden; border:1px solid #b8c8d1; border-radius:.3rem }.alignment-canvas { display:block; width:100%; height:90vh; touch-action:none; cursor:grab }
   @media (max-width: 700px) { header { align-items: flex-start; flex-direction: column }.file-loaders { grid-template-columns:1fr; max-width:none } }
 </style>

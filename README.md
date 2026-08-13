@@ -70,9 +70,9 @@ focused: left/right pan, `+`/`−` zoom, and Home resets the contig. No browser
 or device-specific performance guarantee is made; file size, read depth,
 indexing, and available memory all affect responsiveness.
 
-In browsers that support the CSS resize control, the viewport’s lower-right
-edge can be dragged to make it narrower or wider. Touch-only devices may not
-provide a resize handle.
+Drag the two-line grip on the alignment panel's right edge to make the complete
+viewer—including its background, controls, and read details—narrower or wider.
+The grip is also keyboard accessible with the left and right arrow keys.
 
 ## Project goals
 
