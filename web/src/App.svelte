@@ -24,6 +24,7 @@
   let alignmentsTruncated = false
   let selectedAlignment: AlignmentSummary | null = null
   let alignmentFilter: AlignmentFilter = { min_mapping_quality: 0, include_secondary: true, include_supplementary: true, include_duplicates: true }
+  let highlightDifferences = false
   let alignmentState: 'idle' | 'loading' | 'ready' = 'idle'
   let alignmentReady = false
   let loadGeneration = 0
@@ -193,6 +194,11 @@
     void loadSelectedReference()
   }
 
+  function referenceBaseAt(position: number): string | undefined {
+    const index = position - referenceBasesStart
+    return index >= 0 && index < referenceBases.length ? referenceBases[index]?.toUpperCase() : undefined
+  }
+
   function zoomCanvas(event: WheelEvent) {
     event.preventDefault()
     if (!canvas || !selectedReferenceData) return
@@ -320,10 +326,15 @@
             const position = block.start + index
             if (position < viewStart || position >= viewEnd) continue
             const base = block.bases[index].toUpperCase()
-            const colour = ({ A: '#4daf4a', C: '#377eb8', G: '#ffb000', T: '#e34a33' } as Record<string, string>)[base] ?? '#7f8c8d'
+            const referenceBase = referenceBaseAt(position)
+            const isReferenceMatch = block.known_matches[index] === true || referenceBase === base
+            const displayBase = block.known_matches[index] && referenceBase ? referenceBase : base
+            const colour = highlightDifferences && isReferenceMatch
+              ? '#aab7c0'
+              : ({ A: '#4daf4a', C: '#377eb8', G: '#ffb000', T: '#e34a33' } as Record<string, string>)[displayBase] ?? '#7f8c8d'
             const x = toX(position); const width = Math.max(1, 1 / basesPerPixel)
             context.fillStyle = colour; context.fillRect(x, y, width, 13)
-            if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(base, x + 1, y + 11) }
+            if (basesPerPixel <= 0.09) { context.fillStyle = '#172433'; context.fillText(displayBase, x + 1, y + 11) }
           }
         }
         context.fillStyle = '#f7fafc'
@@ -460,9 +471,9 @@
           {#if alignmentState === 'loading'}<p role="status">Scanning alignments…</p>{/if}
           {#if alignmentReady}
             <p><strong>{alignmentCount.toLocaleString()}</strong> mapped alignment{alignmentCount === 1 ? '' : 's'} found.</p>
-            <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label></fieldset>
+            <fieldset class="alignment-filters"><legend>Alignment filters</legend><label>Minimum MAPQ <input type="number" min="0" max="255" bind:value={alignmentFilter.min_mapping_quality} onchange={applyFilter} /></label><label><input type="checkbox" bind:checked={alignmentFilter.include_secondary} onchange={applyFilter} /> Include secondary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_supplementary} onchange={applyFilter} /> Include supplementary</label><label><input type="checkbox" bind:checked={alignmentFilter.include_duplicates} onchange={applyFilter} /> Include duplicates</label><label><input type="checkbox" bind:checked={highlightDifferences} disabled={!referenceBases} aria-describedby="difference-colour-help" /> Highlight differences</label><small id="difference-colour-help">{referenceBases ? 'Matches are grey; mismatches use nucleotide colours.' : 'Load a matching FASTA to compare read bases.'}</small></fieldset>
             <nav class="viewer-controls" aria-label="Alignment viewer controls"><button onclick={() => resetView(undefined, true)}>Whole contig</button><button onclick={() => zoomBy(.6)}>Zoom in</button><button onclick={() => zoomBy(1 / .6)}>Zoom out</button><output aria-label="Viewport coordinates" aria-live="polite">{Math.floor(viewStart + 1).toLocaleString()}–{Math.ceil(viewEnd).toLocaleString()} (1-based), {viewportBasesPerPixel.toLocaleString()} bp/px</output></nav>
-            <div bind:this={viewport} class="alignment-viewport" use:observeViewport><canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts viewport-resize" aria-busy={alignmentState === 'loading'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas></div><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small><small id="viewport-resize">Drag the two-line grip on the panel’s right edge to resize the complete viewer. Arrow keys resize it when the grip is focused.</small>
+            <div bind:this={viewport} class="alignment-viewport" use:observeViewport><canvas bind:this={canvas} class="alignment-canvas" aria-label="Alignment viewport" aria-describedby="viewport-shortcuts viewport-resize" aria-busy={alignmentState === 'loading'} data-colour-mode={highlightDifferences ? 'differences' : 'bases'} tabindex="0" onkeydown={keyDown} onwheel={zoomCanvas} onpointerdown={pointerDown} onpointermove={pointerMove} onpointerup={pointerUp} onpointercancel={pointerUp}></canvas></div><small id="viewport-shortcuts">Keyboard: ←/→ pan, +/− zoom, Home resets the full contig.</small><small id="viewport-resize">Drag the two-line grip on the panel’s right edge to resize the complete viewer. Arrow keys resize it when the grip is focused.</small>
             {#if densityVisible}<small>Alignment density is shown at this zoom level; zoom in to inspect individual reads.</small>{/if}
             {#if renderCurrentResults && alignments.length}
               <div class="alignment-list" aria-label="Mapped alignments">

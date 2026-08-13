@@ -756,7 +756,12 @@ fn clip_lengths(operations: &[u32]) -> (u32, u32) {
     (left, right)
 }
 
-fn decode_sequence(encoded: &[u8], length: usize) -> String {
+struct DecodedSequence {
+    bases: String,
+    known_matches: Vec<bool>,
+}
+
+fn decode_sequence(encoded: &[u8], length: usize) -> DecodedSequence {
     let decode = |code: u8| match code {
         1 => 'A',
         2 => 'C',
@@ -765,24 +770,28 @@ fn decode_sequence(encoded: &[u8], length: usize) -> String {
         15 => 'N',
         _ => 'N',
     };
-    encoded
+    let codes = encoded
         .iter()
-        .flat_map(|byte| [decode(byte >> 4), decode(byte & 0x0f)])
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
         .take(length)
-        .collect()
+        .collect::<Vec<_>>();
+    DecodedSequence {
+        bases: codes.iter().map(|code| decode(*code)).collect(),
+        known_matches: codes.iter().map(|code| *code == 0).collect(),
+    }
 }
 
 fn project_cigar(
     start: i32,
     operations: &[u32],
-    sequence: &str,
+    sequence: &DecodedSequence,
 ) -> Result<CigarProjection, BamHeaderError> {
     if start < 0 {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     let mut reference = start as u32;
     let mut query = 0_usize;
-    let bases = sequence.as_bytes();
+    let bases = sequence.bases.as_bytes();
     let mut blocks = Vec::new();
     let mut deletions = Vec::new();
     let mut insertions = Vec::new();
@@ -806,6 +815,11 @@ fn project_cigar(
                     start: reference,
                     end,
                     bases: text.into(),
+                    known_matches: sequence
+                        .known_matches
+                        .get(query..end_query)
+                        .ok_or(BamHeaderError::InvalidRecordSize)?
+                        .to_vec(),
                 });
                 reference = end;
                 query = end_query;
@@ -1007,10 +1021,10 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
 
     use super::{
-        clip_lengths, coalesce_bai_chunks, fasta_reference_slice, long_cigar_operations,
-        parse_bai_index, parse_bam_header, parse_fai_references, parse_fasta_references,
-        query_bam_reference, query_bam_region, BaiChunk, BaiError, BamHeaderError,
-        DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
+        clip_lengths, coalesce_bai_chunks, decode_sequence, fasta_reference_slice,
+        long_cigar_operations, parse_bai_index, parse_bam_header, parse_fai_references,
+        parse_fasta_references, query_bam_reference, query_bam_region, BaiChunk, BaiError,
+        BamHeaderError, DENSITY_BIN_COUNT, MAX_ALIGNMENT_SUMMARIES,
     };
 
     fn compressed_header(references: &[(&str, i32)]) -> Vec<u8> {
@@ -1149,7 +1163,8 @@ mod tests {
                     blocks: vec![bamviz_core::AlignedBlock {
                         start: 10,
                         end: 15,
-                        bases: "NNNNN".into()
+                        bases: "NNNNN".into(),
+                        known_matches: vec![true; 5],
                     }],
                     deletions: vec![bamviz_core::ReferenceSpan { start: 15, end: 18 }],
                     insertions: vec![bamviz_core::Insertion {
@@ -1181,7 +1196,8 @@ mod tests {
                     blocks: vec![bamviz_core::AlignedBlock {
                         start: 4,
                         end: 12,
-                        bases: "NNNNNNNN".into()
+                        bases: "NNNNNNNN".into(),
+                        known_matches: vec![true; 8],
                     }],
                     deletions: vec![],
                     insertions: vec![],
@@ -1192,6 +1208,13 @@ mod tests {
                     .collect(),
             }
         );
+    }
+
+    #[test]
+    fn preserves_bam_equals_sequence_symbols_as_known_matches() {
+        let sequence = decode_sequence(&[0x01, 0x20], 4);
+        assert_eq!(sequence.bases, "NACN");
+        assert_eq!(sequence.known_matches, vec![true, false, false, true]);
     }
 
     #[test]

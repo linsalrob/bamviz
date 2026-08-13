@@ -152,6 +152,10 @@ Show:
 
 The transition between levels of detail should be smooth and based on viewport scale, not on separate viewer modes that the user must manually select.
 
+When a matching FASTA is loaded, **Highlight differences** is available beside
+the alignment filters. It renders reference-matching read bases in grey and
+uses the nucleotide palette only for bases that differ from the reference.
+
 ## Proposed architecture
 
 bamviz should initially follow the architecture of `genbank_viewer`:
