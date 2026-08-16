@@ -1,5 +1,14 @@
 # bamviz
 
+[![Edwards Lab](https://img.shields.io/badge/Bioinformatics-EdwardsLab-03A9F4)](https://edwards.flinders.edu.au/)
+[![-viz](https://img.shields.io/badge/FAME--viz-03A9F4)](https://edwards.flinders.edu.au/viz/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![GitHub language count](https://img.shields.io/github/languages/count/linsalrob/bamviz)
+[![Documentation Status](https://readthedocs.org/projects/genbank-to/badge/?version=latest)](https://genbank-to.readthedocs.io/en/latest/?badge=latest)
+
+
+![-viz bioinformatics](images/viz.png)
+
 **bamviz** is a local-first, in-browser viewer for read alignments stored in BAM files.
 
 The goal is a fast, simple genome alignment viewer that runs entirely in the browser: drop in a BAM file, select a contig, and inspect the reads mapped to that reference. At low zoom, aligned bases are represented primarily by colour; at high zoom, individual bases become visible.
